@@ -1,0 +1,14 @@
+*.o
+*.a
+
+/main
+/output.txt
+
+/.direnv/
+/result
+/result-*
+
+.DS_Store
+*~
+*.swp
+*.swo
