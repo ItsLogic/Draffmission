@@ -45,6 +45,7 @@ struct CpuOutput {
 struct GpuOutputs {
     std::queue<GpuOutput> queue;
     std::mutex mutex;
+    size_t gpu_thread_count = 0;
 };
 
 struct CpuOutputs {

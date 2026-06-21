@@ -20,6 +20,10 @@
 #include <algorithm>
 #include <random>
 
+#ifndef NO_GPU
+#include <cuda_runtime.h>
+#endif
+
 #ifdef NO_GPU
 constexpr bool no_gpu = true;
 #else
@@ -91,6 +95,10 @@ struct Args {
             if (std::strcmp("--device", arg) == 0) {
                 if (check_argument(argc, i, arg)) return false;
                 const char *devices_str = argv[i++];
+                if (std::strcmp(devices_str, "all") == 0) {
+                    devices.push_back(-1);
+                    continue;
+                }
                 const char *last = devices_str + std::strlen(devices_str);
                 const char *first = devices_str;
                 while (first != last) {
@@ -148,6 +156,11 @@ struct Args {
 
         if (devices.empty() && !server) {
             devices.push_back(0);
+        }
+
+        if (std::find(devices.begin(), devices.end(), -1) != devices.end() && devices.size() != 1) {
+            std::fprintf(stderr, "--device all cannot be mixed with explicit device ids\n");
+            return false;
         }
 
         if (start_seed && devices.empty()) {
@@ -213,9 +226,45 @@ int main_inner(int argc, char **argv) {
     CpuOutputs cpu_outputs;
 
 #ifndef NO_GPU
+    if (!args.devices.empty() && args.devices[0] == -1) {
+        int device_count = 0;
+        auto err = cudaGetDeviceCount(&device_count);
+        if (err != cudaSuccess) {
+            std::fprintf(stderr, "cudaGetDeviceCount failed: %s\n", cudaGetErrorString(err));
+            return 1;
+        }
+        if (device_count <= 0) {
+            std::fprintf(stderr, "--device all requested but no CUDA devices are visible\n");
+            return 1;
+        }
+        args.devices.clear();
+        for (int device = 0; device < device_count; device++) {
+            args.devices.push_back(device);
+        }
+    } else if (!args.devices.empty()) {
+        int device_count = 0;
+        auto err = cudaGetDeviceCount(&device_count);
+        if (err != cudaSuccess) {
+            std::fprintf(stderr, "cudaGetDeviceCount failed: %s\n", cudaGetErrorString(err));
+            return 1;
+        }
+        for (int device : args.devices) {
+            if (device >= device_count) {
+                std::fprintf(stderr, "CUDA device %d requested but only %d device(s) are visible\n", device, device_count);
+                return 1;
+            }
+        }
+    }
+
     uint64_t start_seed = args.start_seed.value_or(random_start_seed());
     std::printf("Starting from %" PRIi64 "\n", start_seed);
+    std::printf("Using %zu CUDA device(s):", args.devices.size());
+    for (int device : args.devices) {
+        std::printf(" %d", device);
+    }
+    std::printf("\n");
     SeedIterator seed_range(start_seed);
+    gpu_outputs.gpu_thread_count = args.devices.size();
 
     std::vector<std::unique_ptr<GpuThread>> gpu_threads;
     for (int device : args.devices) {

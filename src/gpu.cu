@@ -11,6 +11,7 @@
 #include <thread>
 #include <utility>
 #include <algorithm>
+#include <condition_variable>
 
 #define PANIC(...)                                                             \
   {                                                                            \
@@ -1665,6 +1666,156 @@ struct BufferLens {
   uint32_t results_len_filter_2[7];
 };
 
+struct StageStatsSnapshot {
+  std::string name;
+  uint64_t inputs_multiplier;
+  double total_time;
+  uint64_t total_inputs;
+  uint64_t total_outputs;
+};
+
+struct GpuReportSnapshot {
+  int device;
+  uint64_t start_seed;
+  double host_total_time;
+  std::vector<StageStatsSnapshot> stages;
+  uint64_t total_inputs;
+  uint64_t total_outputs;
+};
+
+struct GlobalReportAggregator {
+  std::mutex mutex;
+  std::condition_variable cv;
+  std::vector<GpuReportSnapshot> snapshots;
+  uint64_t generation = 0;
+  bool printing = false;
+
+  void submit(GpuReportSnapshot &&snapshot, size_t expected_count) {
+    std::unique_lock lock(mutex);
+
+    snapshots.push_back(std::move(snapshot));
+
+    if (snapshots.size() < expected_count) {
+      const uint64_t my_generation = generation;
+      cv.wait(lock, [&] { return generation != my_generation; });
+      return;
+    }
+
+    printing = true;
+
+    lock.unlock();
+    print_combined();
+    lock.lock();
+
+    snapshots.clear();
+    printing = false;
+    generation++;
+    cv.notify_all();
+  }
+
+  void print_combined() {
+    std::vector<GpuReportSnapshot> sorted;
+    {
+      std::lock_guard lock(mutex);
+      sorted = snapshots;
+    }
+    std::sort(sorted.begin(), sorted.end(),
+              [](const GpuReportSnapshot &a, const GpuReportSnapshot &b) {
+                return a.device < b.device;
+              });
+
+    if (sorted.empty()) return;
+
+    const size_t gpu_count = sorted.size();
+
+    std::printf("\n");
+    std::printf("=== Combined report: %zu GPU(s) ===\n", gpu_count);
+
+    double max_host_time = 0;
+    for (const auto &snap : sorted) {
+      max_host_time = std::max(max_host_time, snap.host_total_time);
+    }
+
+    for (size_t stage_idx = 0; stage_idx < sorted[0].stages.size(); stage_idx++) {
+      double combined_time = 0;
+      uint64_t combined_inputs = 0;
+      uint64_t combined_outputs = 0;
+      uint64_t multiplier = sorted[0].stages[stage_idx].inputs_multiplier;
+
+      for (const auto &snap : sorted) {
+        combined_time += snap.stages[stage_idx].total_time;
+        combined_inputs += snap.stages[stage_idx].total_inputs;
+        combined_outputs += snap.stages[stage_idx].total_outputs;
+      }
+
+      uint64_t scaled_combined_inputs = combined_inputs * multiplier;
+      double avg_time = combined_time / gpu_count;
+
+      auto [scaled_input_speed, input_speed_unit] =
+          scale_si(scaled_combined_inputs / max_host_time);
+      auto [scaled_output_speed, output_speed_unit] =
+          scale_si(combined_outputs / max_host_time);
+
+      std::printf(
+          "%-20s - %9.3f ms | %7.3f %% | %12" PRIu64 " -> %12" PRIu64
+          " | 1 in %11.3f | %7.3f %cips | %7.3f %cops\n",
+          sorted[0].stages[stage_idx].name.c_str(), avg_time * 1e3,
+          avg_time / max_host_time * 100.0, scaled_combined_inputs,
+          combined_outputs, (double)scaled_combined_inputs / combined_outputs,
+          scaled_input_speed, input_speed_unit, scaled_output_speed,
+          output_speed_unit);
+    }
+
+    uint64_t grand_inputs = 0;
+    uint64_t grand_outputs = 0;
+    double grand_kernel_time = 0;
+    for (const auto &snap : sorted) {
+      grand_inputs += snap.total_inputs;
+      grand_outputs += snap.total_outputs;
+      for (const auto &stage : snap.stages) {
+        grand_kernel_time += stage.total_time;
+      }
+    }
+
+    auto [grand_input_speed, grand_input_unit] =
+        scale_si(grand_inputs / max_host_time);
+    auto [grand_output_speed, grand_output_unit] =
+        scale_si(grand_outputs / max_host_time);
+
+    std::printf(
+        "total                - %9.3f ms | %7.3f %% | %12" PRIu64
+        " -> %12" PRIu64 " |                  | %7.3f %cips | %7.3f %cops\n",
+        max_host_time * 1e3, (grand_kernel_time / gpu_count) / max_host_time * 100.0,
+        grand_inputs, grand_outputs, grand_input_speed, grand_input_unit,
+        grand_output_speed, grand_output_unit);
+
+    size_t gpu_outputs_size;
+    {
+      std::lock_guard lock(outputs_mutex);
+      gpu_outputs_size = outputs_queue_size;
+    }
+    std::printf("gpu_outputs.size() = %zu\n", gpu_outputs_size);
+
+    std::printf("--- Per-GPU breakdown ---\n");
+    for (const auto &snap : sorted) {
+      auto [ips, ips_unit] =
+          scale_si(snap.total_inputs / snap.host_total_time);
+      auto [ops, ops_unit] =
+          scale_si(snap.total_outputs / snap.host_total_time);
+      std::printf(
+          "  GPU %d: %9.3f ms | %12" PRIu64 " -> %12" PRIu64
+          " | %7.3f %cips | %7.3f %cops\n",
+          snap.device, snap.host_total_time * 1e3, snap.total_inputs,
+          snap.total_outputs, ips, ips_unit, ops, ops_unit);
+    }
+  }
+
+  std::mutex outputs_mutex;
+  size_t outputs_queue_size = 0;
+};
+
+GlobalReportAggregator global_report_aggregator;
+
 
 GpuThread::GpuThread(int device, SeedIterator &input, GpuOutputs &outputs)
     : Thread(), device(device), input(input), outputs(outputs) {
@@ -1870,42 +2021,28 @@ void GpuThread::run() {
       auto end = std::chrono::steady_clock::now();
       double host_total_time = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count() * 1e-9;
 
-      std::printf("\n");
-      std::printf("start_seed = %" PRIi64 "\n", start_seed);
+      GpuReportSnapshot snapshot;
+      snapshot.device = device;
+      snapshot.start_seed = start_seed;
+      snapshot.host_total_time = host_total_time;
 
-      double kernel_total_time = 0;
-      for (auto &stage : stage_stats) {
-        uint64_t scaled_total_inputs = stage.total_inputs * stage.inputs_multiplier;
-        auto [scaled_input_speed, input_speed_unit] = scale_si(scaled_total_inputs / stage.total_time);
-        auto [scaled_output_speed, output_speed_unit] = scale_si(stage.total_outputs / stage.total_time);
-        std::printf("%-20s - %9.3f ms | %7.3f %% | %12" PRIu64 " -> %12" PRIu64
-                    " | 1 in %11.3f | %7.3f %cips | %7.3f %cops\n",
-                    stage.name.c_str(), stage.total_time * 1e3,
-                    stage.total_time / host_total_time * 100.0,
-                    scaled_total_inputs, stage.total_outputs,
-                    (double)scaled_total_inputs / stage.total_outputs,
-                    scaled_input_speed, input_speed_unit, scaled_output_speed,
-                    output_speed_unit);
-        kernel_total_time += stage.total_time;
+      for (const auto &stage : stage_stats) {
+        snapshot.stages.push_back({stage.name, stage.inputs_multiplier,
+                                   stage.total_time, stage.total_inputs,
+                                   stage.total_outputs});
       }
 
-      uint64_t total_inputs = stage_filter_seeds.total_inputs * stage_filter_seeds.inputs_multiplier;
-      uint64_t total_outputs = filter_2.back().stage.total_outputs;
-      auto [scaled_input_speed, input_speed_unit] = scale_si(total_inputs / host_total_time);
-      auto [scaled_output_speed, output_speed_unit] = scale_si(total_outputs / host_total_time);
-      std::printf(
-          "total                - %9.3f ms | %7.3f %% | %12" PRIu64
-          " -> %12" PRIu64 " |                  | %7.3f %cips | %7.3f %cops\n",
-          host_total_time * 1e3, kernel_total_time / host_total_time * 100.0,
-          total_inputs, total_outputs, scaled_input_speed, input_speed_unit,
-          scaled_output_speed, output_speed_unit);
+      snapshot.total_inputs = stage_filter_seeds.total_inputs * stage_filter_seeds.inputs_multiplier;
+      snapshot.total_outputs = filter_2.back().stage.total_outputs;
 
-      size_t gpu_outputs_size;
       {
-        std::lock_guard lock(outputs.mutex);
-        gpu_outputs_size = outputs.queue.size();
+        std::lock_guard lock(global_report_aggregator.outputs_mutex);
+        std::lock_guard lock2(outputs.mutex);
+        global_report_aggregator.outputs_queue_size = outputs.queue.size();
       }
-      std::printf("gpu_outputs.size() = %zu\n", gpu_outputs_size);
+
+      global_report_aggregator.submit(std::move(snapshot),
+                                      outputs.gpu_thread_count);
 
       for (auto &stage_stat : stage_stats) {
         stage_stat.reset();
