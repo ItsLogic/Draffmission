@@ -5,7 +5,25 @@ UNBOUND ?= 1
 PRINT_INTERVAL ?= 4096
 override CFLAGS += -O3
 override CXXFLAGS += -O3 -std=c++20 -I asio/asio/include -DOMISSION_LARGE_BIOMES=$(LARGE_BIOMES) -DOMISSION_UNBOUND=$(UNBOUND) -DPRINT_INTERVAL=$(PRINT_INTERVAL)
-override NVCC_FLAGS += $(CXXFLAGS) --expt-relaxed-constexpr --default-stream per-thread -arch=sm_89 -use_fast_math
+
+# Auto-detect GPU architecture:
+# - RTX 40xx/50xx series: sm_89 is faster than native sm_120
+# - Everything else: use native
+# Override manually with: make GPU_ARCH=sm_89
+ifndef GPU_ARCH
+  GPU_NAMES := $(shell nvidia-smi --query-gpu=name --format=csv,noheader)
+  ifneq (,$(findstring RTX 40,$(GPU_NAMES)))
+    GPU_ARCH := sm_89
+  else ifneq (,$(findstring RTX 50,$(GPU_NAMES)))
+    GPU_ARCH := sm_89
+  else
+    GPU_ARCH := native
+  endif
+endif
+
+$(info Using GPU_ARCH = $(GPU_ARCH))
+
+override NVCC_FLAGS += $(CXXFLAGS) --expt-relaxed-constexpr --default-stream per-thread -arch=$(GPU_ARCH) -use_fast_math
 
 ifeq ($(OS),Windows_NT)
 all: main.exe
