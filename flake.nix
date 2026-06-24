@@ -9,11 +9,21 @@
       let
         pkgs = import nixpkgs {
           inherit system;
-          config.allowUnfree = true;
+          config = {
+            allowUnfree = true;
+            allowUnsupportedSystem = true;
+          };
         };
-        cuda = pkgs.cudaPackages_12;
-        # CUDA 12.x supports up to gcc 13 as host compiler
-        hostStdenv = pkgs.gcc13Stdenv;
+        cuda = pkgs.cudaPackages_13_2.overrideScope (final: prev: {
+          cuda_compat = pkgs.runCommand "cuda_compat-fake" { } ''
+            mkdir -p $out
+          '';
+          autoAddCudaCompatRunpathHook = pkgs.makeSetupHook
+            { name = "auto-add-cuda-compat-runpath-hook-fake"; }
+            (pkgs.writeText "auto-add-cuda-compat-runpath-hook.sh" "");
+        });
+        hostStdenv = cuda.backendStdenv;
+        hostCC = hostStdenv.cc;
       in
       {
         devShells.default = (pkgs.mkShell.override { stdenv = hostStdenv; }) {
@@ -21,12 +31,8 @@
             pkgs.gnumake
             cuda.cudatoolkit
           ];
-          # nvcc's -ccbin will pick this up via the makefile
-          CXX = "${pkgs.gcc13}/bin/g++";
-          CC = "${pkgs.gcc13}/bin/gcc";
-
-          # CUDA runtime needs the host driver's libcuda.so, which on NixOS
-          # lives in /run/opengl-driver/lib (not in the cudatoolkit).
+          CXX = "${hostCC}/bin/g++";
+          CC = "${hostCC}/bin/gcc";
           LD_LIBRARY_PATH = "${cuda.cudatoolkit}/lib:/run/opengl-driver/lib";
         };
       });

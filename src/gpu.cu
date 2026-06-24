@@ -1,4 +1,10 @@
 #include "Random.h"
+
+#ifdef SPLIT
+#define SPLIT_WEAK __attribute__((weak))
+#else
+#define SPLIT_WEAK
+#endif
 #include "gpu.h"
 
 #include <array>
@@ -870,7 +876,7 @@ void run(
     const KernelSeed1::Result* __restrict__ results,
     cudaStream_t stream)
 {
-  kernel<<<2048, block_dim_x, 0, stream>>>(seeds, outputs, results);
+  kernel<<<1530, block_dim_x, 0, stream>>>(seeds, outputs, results);
   TRY_CUDA(cudaGetLastError());
 }
 } // namespace KernelFilterGradVecs1
@@ -899,7 +905,7 @@ __launch_bounds__(block_dim_x) void kernel(
   }
 
   constexpr int32_t cell_size_0A = (int32_t)(1.0f / chosen_continentalness_config.octaves_a[0].input_factor) * 256;
-  const float input_factor_b = chosen_continentalness_config.octaves_b[0].input_factor;
+  constexpr float input_factor_b = chosen_continentalness_config.octaves_b[0].input_factor;
   const int32_t grid_half_s = (int32_t)grid_half;
 
   const uint32_t inputs_len = *inputs.len;
@@ -1396,7 +1402,7 @@ __global__ __launch_bounds__(threads_per_block) void kernel(InputBuffer<SeedPos>
   }
 }
 
-void run(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results, cudaStream_t stream) {
+SPLIT_WEAK void run(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results, cudaStream_t stream) {
   kernel<<<32 * 256, threads_per_block, 0, stream>>>(inputs, outputs, results);
   TRY_CUDA(cudaGetLastError());
 }
@@ -1562,7 +1568,7 @@ __global__ __launch_bounds__(threads_per_block) void kernel(InputBuffer<SeedPos>
   }
 }
 
-void run(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results, cudaStream_t stream) {
+SPLIT_WEAK void run(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results, cudaStream_t stream) {
   kernel<<<32 * 256, threads_per_block, 0, stream>>>(inputs, outputs, results);
   TRY_CUDA(cudaGetLastError());
 }
@@ -1752,9 +1758,9 @@ struct GlobalReportAggregator {
       double avg_time = combined_time / gpu_count;
 
       auto [scaled_input_speed, input_speed_unit] =
-          scale_si(scaled_combined_inputs / max_host_time);
+          scale_si(scaled_combined_inputs / avg_time);
       auto [scaled_output_speed, output_speed_unit] =
-          scale_si(combined_outputs / max_host_time);
+          scale_si(combined_outputs / avg_time);
 
       std::printf(
           "%-20s - %9.3f ms | %7.3f %% | %12" PRIu64 " -> %12" PRIu64
@@ -1777,10 +1783,12 @@ struct GlobalReportAggregator {
       }
     }
 
+    double grand_avg_kernel_time = grand_kernel_time / gpu_count;
+
     auto [grand_input_speed, grand_input_unit] =
-        scale_si(grand_inputs / max_host_time);
+        scale_si(grand_inputs / grand_avg_kernel_time);
     auto [grand_output_speed, grand_output_unit] =
-        scale_si(grand_outputs / max_host_time);
+        scale_si(grand_outputs / grand_avg_kernel_time);
 
     std::printf(
         "total                - %9.3f ms | %7.3f %% | %12" PRIu64
@@ -1832,6 +1840,9 @@ void GpuThread::run() {
   cudaFuncSetAttribute(KernelFilter2_0B::kernel,    cudaFuncAttributePreferredSharedMemoryCarveout, 100);
   init_grad_dot_table();
   init_conv_kernels();
+#ifdef SPLIT
+  extern void init_compat_tables(); init_compat_tables();
+#endif
 
   cudaStream_t stream;
   TRY_CUDA(cudaStreamCreate(&stream));

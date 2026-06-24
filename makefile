@@ -6,15 +6,11 @@ PRINT_INTERVAL ?= 4096
 override CFLAGS += -O3
 override CXXFLAGS += -O3 -std=c++20 -I asio/asio/include -DOMISSION_LARGE_BIOMES=$(LARGE_BIOMES) -DOMISSION_UNBOUND=$(UNBOUND) -DPRINT_INTERVAL=$(PRINT_INTERVAL)
 
-# Auto-detect GPU architecture:
-# - RTX 40xx/50xx series: sm_89 is faster than native sm_120
-# - Everything else: use native
-# Override manually with: make GPU_ARCH=sm_89
 ifndef GPU_ARCH
   GPU_NAMES := $(shell nvidia-smi --query-gpu=name --format=csv,noheader)
-  ifneq (,$(findstring RTX 40,$(GPU_NAMES)))
-    GPU_ARCH := sm_89
-  else ifneq (,$(findstring RTX 50,$(GPU_NAMES)))
+  ifneq (,$(findstring RTX 50,$(GPU_NAMES)))
+    GPU_ARCH := sm_120
+  else ifneq (,$(findstring RTX 40,$(GPU_NAMES)))
     GPU_ARCH := sm_89
   else
     GPU_ARCH := native
@@ -23,16 +19,7 @@ endif
 
 $(info Using GPU_ARCH = $(GPU_ARCH))
 
-override NVCC_FLAGS += $(CXXFLAGS) --expt-relaxed-constexpr --default-stream per-thread -arch=$(GPU_ARCH) -use_fast_math
-
-ifeq ($(OS),Windows_NT)
-all: main.exe
-
-# nvcc src/*.cpp src/*.c src/*.cu -o main.exe cubiomes/biomenoise.c cubiomes/biomes.c cubiomes/finders.c cubiomes/generator.c cubiomes/layers.c cubiomes/noise.c -arch=native -O3 -std=c++20 -I asio-1.34.2/include -DOMISSION_LARGE_BIOMES=1 --expt-relaxed-constexpr --default-stream per-thread -D_WIN32_WINNT=0x0601
-main.exe: src/*.*
-	nvcc src/*.cpp src/*.c src/*.cu $(CUBIOMES_SRC) -o $@ $(NVCC_FLAGS) -D_WIN32_WINNT=0x0601
-else
-override NVCC_FLAGS += -ccbin $(CXX)
+override NVCC_FLAGS += $(CXXFLAGS) --expt-relaxed-constexpr --default-stream per-thread -arch=$(GPU_ARCH) -use_fast_math -ccbin $(CXX)
 
 MAIN_SRC := src/main.cpp
 MAIN_DEP := $(MAIN_SRC) src/common.h
@@ -41,7 +28,13 @@ ifndef NO_GPU
 	MAIN_SRC += gpu.o
 	MAIN_DEP += gpu.o src/gpu.h
 	MAIN_CXX := nvcc
-	MAIN_CXXFLAGS += $(NVCC_FLAGS)
+	ifeq ($(SPLIT),1)
+		# SPLIT: skip device link to preserve compute_89 PTX from gpu_compat.o
+		# Without -nodlink, nvcc compiles the PTX to bad sm_120 cubin at link time
+		MAIN_CXXFLAGS += $(filter-out -arch=%,$(NVCC_FLAGS)) -nodlink
+	else
+		MAIN_CXXFLAGS += $(NVCC_FLAGS)
+	endif
 else
 	MAIN_CXX := $(CXX)
 	MAIN_CXXFLAGS += $(CXXFLAGS) -DNO_GPU
@@ -61,10 +54,35 @@ else
 	MAIN_CXXFLAGS += -DNO_NET
 endif
 
+# Split compilation: SPLIT=1 enables gpu_compat.o (compute_89 JIT for Filter2_0A/0B)
+ifeq ($(SPLIT),1)
+	MAIN_SRC += gpu_compat.o
+	MAIN_DEP += gpu_compat.o
+endif
+
 all: main
 
+# usb/sb: split compilation (sm_120 + compute_89 JIT)
+usb:
+	$(MAKE) LARGE_BIOMES=0 UNBOUND=1 SPLIT=1 clean main
+
+sb:
+	$(MAKE) LARGE_BIOMES=0 UNBOUND=0 SPLIT=1 clean main
+
+# lb/ulb: pure sm_89 JIT (identical to official, correct results)
+lb:
+	$(MAKE) LARGE_BIOMES=1 UNBOUND=0 GPU_ARCH=sm_89 clean main
+
+ulb:
+	$(MAKE) LARGE_BIOMES=1 UNBOUND=1 GPU_ARCH=sm_89 clean main
+
+.PHONY: bench
+bench: bench/bench.cu src/Random.h src/kernel_0A.h src/kernel_0B.h
+	nvcc $< -o bench/bench -O3 -std=c++20 --expt-relaxed-constexpr --default-stream per-thread \
+	  -arch=$(GPU_ARCH) -use_fast_math -ccbin $(CXX) -Xptxas -v
+
 clean:
-	rm -f main libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o cpu.o client.o server.o
+	rm -f main bench/bench libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o gpu_compat.o cpu.o client.o server.o
 
 libcubiomes.a:
 	$(CC) -c $(CUBIOMES_SRC) -fwrapv $(CFLAGS)
@@ -74,7 +92,10 @@ cubiomes.o: src/cubiomes.c src/cubiomes.h
 	$(CC) -c $< -o $@ $(CFLAGS)
 
 gpu.o: src/gpu.cu src/gpu.h src/common.h src/Random.h
-	nvcc -c $< -o $@ $(NVCC_FLAGS)
+	nvcc -c $< -o $@ $(NVCC_FLAGS) $(if $(filter 1,$(SPLIT)),-DSPLIT)
+
+gpu_compat.o: src/gpu_compat.cu src/gpu_types.h src/common.h src/kernel_0A.h src/kernel_0B.h
+	nvcc -c $< -o $@ $(CXXFLAGS) --expt-relaxed-constexpr --default-stream per-thread -use_fast_math -ccbin $(CXX) -arch=compute_89
 
 cpu.o: src/cpu.cpp src/cpu.h src/common.h src/cubiomes.h
 	$(CXX) -c $< -o $@ $(CXXFLAGS)
@@ -87,4 +108,3 @@ server.o: src/server.cpp src/server.h src/common.h
 
 main: $(MAIN_DEP)
 	$(MAIN_CXX) $(MAIN_SRC) -o $@ $(MAIN_CXXFLAGS)
-endif
