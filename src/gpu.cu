@@ -876,7 +876,7 @@ void run(
     const KernelSeed1::Result* __restrict__ results,
     cudaStream_t stream)
 {
-  kernel<<<1530, block_dim_x, 0, stream>>>(seeds, outputs, results);
+  kernel<<<6800, block_dim_x, 0, stream>>>(seeds, outputs, results);
   TRY_CUDA(cudaGetLastError());
 }
 } // namespace KernelFilterGradVecs1
@@ -1403,7 +1403,7 @@ __global__ __launch_bounds__(threads_per_block) void kernel(InputBuffer<SeedPos>
 }
 
 SPLIT_WEAK void run(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results, cudaStream_t stream) {
-  kernel<<<32 * 256, threads_per_block, 0, stream>>>(inputs, outputs, results);
+  kernel<<<2380, threads_per_block, 0, stream>>>(inputs, outputs, results);
   TRY_CUDA(cudaGetLastError());
 }
 } // namespace KernelFilter2_0A
@@ -1569,7 +1569,7 @@ __global__ __launch_bounds__(threads_per_block) void kernel(InputBuffer<SeedPos>
 }
 
 SPLIT_WEAK void run(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results, cudaStream_t stream) {
-  kernel<<<32 * 256, threads_per_block, 0, stream>>>(inputs, outputs, results);
+  kernel<<<2380, threads_per_block, 0, stream>>>(inputs, outputs, results);
   TRY_CUDA(cudaGetLastError());
 }
 } // namespace KernelFilter2_0B

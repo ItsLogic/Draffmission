@@ -132,14 +132,14 @@ static GradDotTable make_gdt(){
 namespace KernelFilter2_0A {
     void run(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs,
              KernelSeed1::Result *results, cudaStream_t stream) {
-        filter2_compat_kernel<27,false><<<32*256,256,0,stream>>>(inputs,outputs,results,make_gdt());
+        filter2_compat_kernel<27,false><<<2380,256,0,stream>>>(inputs,outputs,results,make_gdt());
         TRY_CUDA(cudaGetLastError());
     }
 }
 namespace KernelFilter2_0B {
     void run(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs,
              KernelSeed1::Result *results, cudaStream_t stream) {
-        filter2_compat_kernel<20,true><<<32*256,256,0,stream>>>(inputs,outputs,results,make_gdt());
+        filter2_compat_kernel<20,true><<<2380,256,0,stream>>>(inputs,outputs,results,make_gdt());
         TRY_CUDA(cudaGetLastError());
     }
 }
