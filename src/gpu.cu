@@ -896,8 +896,8 @@ __launch_bounds__(block_dim_x) void kernel(
   __shared__ alignas(16) ImprovedNoise oct_0B;
   __shared__ alignas(16) float shared_kernel_0B[6][6][16][2];
 
-  __shared__ float conv_z0[513][6];
-  __shared__ float conv_z1[513][6];
+  __shared__ float conv_z0[256][6];
+  __shared__ float conv_z1[256][6];
 
   for (uint32_t i = threadIdx.x; i < 288; i += blockDim.x) {
     reinterpret_cast<uint4*>(shared_kernel_0B)[i] =
@@ -942,8 +942,6 @@ __launch_bounds__(block_dim_x) void kernel(
 
         conv_z0[V][dnx] = conv0;
         conv_z1[V][dnx] = conv1;
-        conv_z0[V + 256][dnx] = conv0;
-        conv_z1[V + 256][dnx] = conv1;
       }
     }
 
@@ -981,9 +979,15 @@ __launch_bounds__(block_dim_x) void kernel(
           idx1[i] = hoisted_idx_xy[1][i] + nz_masked;
         }
 
-        const float gate = score_center_2x2(conv_z0, conv_z1, idx0, idx1);
+        const float gate = conv_z0[idx0[2] & 0xFF][2] + conv_z0[idx0[3] & 0xFF][3]
+                         + conv_z1[idx1[2] & 0xFF][2] + conv_z1[idx1[3] & 0xFF][3];
         if (gate >= kGradVecs2PrefilterThreshold) {
-          const float score = score_full_12(conv_z0, conv_z1, idx0, idx1);
+          float score = 0;
+#pragma unroll
+          for (int32_t i = 0; i < 6; ++i) {
+            score += conv_z0[idx0[i] & 0xFF][i];
+            score += conv_z1[idx1[i] & 0xFF][i];
+          }
           if (score > kGradVecs2FinalThreshold) {
             uint32_t result_index = atomicAdd(outputs.len, 1);
             if (result_index < outputs.max_len) {
