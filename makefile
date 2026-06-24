@@ -69,12 +69,12 @@ usb:
 sb:
 	$(MAKE) LARGE_BIOMES=0 UNBOUND=0 SPLIT=1 clean main
 
-# lb/ulb: pure sm_89 JIT (identical to official, correct results)
+# lb/ulb: split compilation (sm_120 native + compute_89 JIT for filter2)
 lb:
-	$(MAKE) LARGE_BIOMES=1 UNBOUND=0 GPU_ARCH=sm_89 clean main
+	$(MAKE) LARGE_BIOMES=1 UNBOUND=0 SPLIT=1 clean main
 
 ulb:
-	$(MAKE) LARGE_BIOMES=1 UNBOUND=1 GPU_ARCH=sm_89 clean main
+	$(MAKE) LARGE_BIOMES=1 UNBOUND=1 SPLIT=1 clean main
 
 .PHONY: bench
 bench: bench/bench.cu src/Random.h src/kernel_0A.h src/kernel_0B.h
