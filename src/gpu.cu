@@ -1108,7 +1108,7 @@ struct Template {
 };
 
 template <typename T>
-__global__ __launch_bounds__(T::threads_per_block) void kernel(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results) {
+__global__ __launch_bounds__(T::threads_per_block, T::loops > 1 ? 2 : 1) void kernel(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs, const KernelSeed1::Result * __restrict__ results) {
   __shared__ GradDotTable shared_grad_dot_table;
   
   constexpr uint32_t grad_table_words = sizeof(GradDotTable) / sizeof(uint32_t);
@@ -1167,7 +1167,6 @@ __global__ __launch_bounds__(T::threads_per_block) void kernel(InputBuffer<SeedP
 
       const auto &octaves = reinterpret_cast<const KernelSeed1::ResultSampler<T::octaves> &>(results[input.seed_index]);
 
-      #pragma unroll
       for (uint32_t i = 0; i < T::loops; i++) {
         float val;
         if constexpr (T::only_a) {
