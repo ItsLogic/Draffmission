@@ -934,7 +934,8 @@ __launch_bounds__(block_dim_x) void kernel(
 
   __shared__ float conv_z0[256][6];
   __shared__ float conv_z1[256][6];
-  __shared__ int32_t s_hoisted_xy[2][6];
+  constexpr uint32_t HBATCH = 40;
+  __shared__ int32_t s_hoisted_xy[HBATCH][2][6];
 
   for (uint32_t i = threadIdx.x; i < 288; i += blockDim.x) {
     reinterpret_cast<uint4*>(shared_kernel_0B)[i] =
@@ -986,58 +987,69 @@ __launch_bounds__(block_dim_x) void kernel(
 
     const int32_t ny = oct_0B.yo;
 
-    for (uint32_t tx = 0; tx < grid_width; ++tx) {
-      const int32_t tile_dx = ((int32_t)tx - grid_half_s) * cell_size_0A;
-      const int32_t x = input.x + tile_dx;
-      const int32_t nx = __float2int_rd(x * input_factor_b + oct_0B.xo - 2.0f);
+    for (uint32_t tx_base = 0; tx_base < grid_width; tx_base += HBATCH) {
+      const uint32_t batch_len = (tx_base + HBATCH <= grid_width) ? HBATCH : (grid_width - tx_base);
 
-      int32_t hoisted_idx_xy[2][6];
-      if (threadIdx.x < 12) {
-        int32_t dnx = threadIdx.x % 6;
-        int32_t dny = threadIdx.x / 6;
+      for (uint32_t tid = threadIdx.x; tid < batch_len * 12; tid += blockDim.x) {
+        uint32_t bi = tid / 12;
+        uint32_t vi = tid % 12;
+        int32_t dnx = vi % 6;
+        int32_t dny = vi / 6;
+        uint32_t tx = tx_base + bi;
+        const int32_t tile_dx = ((int32_t)tx - grid_half_s) * cell_size_0A;
+        const int32_t x = input.x + tile_dx;
+        const int32_t nx = __float2int_rd(x * input_factor_b + oct_0B.xo - 2.0f);
         const int32_t idx_x = oct_0B.p[(nx + dnx) & 0xFF];
-        s_hoisted_xy[dny][dnx] = oct_0B.p[(idx_x + ny + dny) & 0xFF];
+        s_hoisted_xy[bi][dny][dnx] = oct_0B.p[(idx_x + ny + dny) & 0xFF];
       }
       __syncthreads();
 
-#pragma unroll
-      for (int32_t i = 0; i < 6; ++i) {
-        hoisted_idx_xy[0][i] = s_hoisted_xy[0][i];
-        hoisted_idx_xy[1][i] = s_hoisted_xy[1][i];
-      }
+      for (uint32_t bi = 0; bi < batch_len; bi++) {
+        uint32_t tx = tx_base + bi;
+        const int32_t tile_dx = ((int32_t)tx - grid_half_s) * cell_size_0A;
+        const int32_t x = input.x + tile_dx;
 
-      for (uint32_t tz = threadIdx.x; tz < grid_width; tz += blockDim.x) {
-        const int32_t tile_dz = ((int32_t)tz - grid_half_s) * cell_size_0A;
-        const int32_t z = input.z + tile_dz;
-
-        const int32_t nz = __float2int_rd(z * input_factor_b + oct_0B.zo - 2.0f);
-        const int32_t nz_masked = nz & 0xFF;
-
-        int32_t idx0[6];
-        int32_t idx1[6];
+        int32_t hoisted_idx_xy[2][6];
 #pragma unroll
         for (int32_t i = 0; i < 6; ++i) {
-          idx0[i] = hoisted_idx_xy[0][i] + nz_masked;
-          idx1[i] = hoisted_idx_xy[1][i] + nz_masked;
+          hoisted_idx_xy[0][i] = s_hoisted_xy[bi][0][i];
+          hoisted_idx_xy[1][i] = s_hoisted_xy[bi][1][i];
         }
 
-        const float gate = conv_z0[idx0[2] & 0xFF][2] + conv_z0[idx0[3] & 0xFF][3]
-                         + conv_z1[idx1[2] & 0xFF][2] + conv_z1[idx1[3] & 0xFF][3];
-        if (gate >= kGradVecs2PrefilterThreshold) {
-          float score = 0;
+        for (uint32_t tz = threadIdx.x; tz < grid_width; tz += blockDim.x) {
+          const int32_t tile_dz = ((int32_t)tz - grid_half_s) * cell_size_0A;
+          const int32_t z = input.z + tile_dz;
+
+          const int32_t nz = __float2int_rd(z * input_factor_b + oct_0B.zo - 2.0f);
+          const int32_t nz_masked = nz & 0xFF;
+
+          int32_t idx0[6];
+          int32_t idx1[6];
 #pragma unroll
           for (int32_t i = 0; i < 6; ++i) {
-            score += conv_z0[idx0[i] & 0xFF][i];
-            score += conv_z1[idx1[i] & 0xFF][i];
+            idx0[i] = hoisted_idx_xy[0][i] + nz_masked;
+            idx1[i] = hoisted_idx_xy[1][i] + nz_masked;
           }
-          if (score > kGradVecs2FinalThreshold) {
-            uint32_t result_index = atomicAdd(outputs.len, 1);
-            if (result_index < outputs.max_len) {
-              outputs.data[result_index] = {input.seed_index, x, z};
+
+          const float gate = conv_z0[idx0[2] & 0xFF][2] + conv_z0[idx0[3] & 0xFF][3]
+                           + conv_z1[idx1[2] & 0xFF][2] + conv_z1[idx1[3] & 0xFF][3];
+          if (gate >= kGradVecs2PrefilterThreshold) {
+            float score = 0;
+#pragma unroll
+            for (int32_t i = 0; i < 6; ++i) {
+              score += conv_z0[idx0[i] & 0xFF][i];
+              score += conv_z1[idx1[i] & 0xFF][i];
+            }
+            if (score > kGradVecs2FinalThreshold) {
+              uint32_t result_index = atomicAdd(outputs.len, 1);
+              if (result_index < outputs.max_len) {
+                outputs.data[result_index] = {input.seed_index, x, z};
+              }
             }
           }
         }
       }
+      __syncthreads();
     }
   }
 }
