@@ -19,6 +19,8 @@
 #include <charconv>
 #include <algorithm>
 #include <random>
+#include <set>
+#include <tuple>
 
 #ifndef NO_GPU
 #include <cuda_runtime.h>
@@ -291,12 +293,17 @@ int main_inner(int argc, char **argv) {
     }
 #endif
 
+    std::set<std::tuple<uint64_t, int32_t, int32_t>> seen_outputs;
+
     for (size_t i = 0;; i++) {
         if (threads != 0) {
             std::lock_guard lock(cpu_outputs.mutex);
             while (!cpu_outputs.queue.empty()) {
                 auto output = cpu_outputs.queue.front();
                 cpu_outputs.queue.pop();
+                auto key = std::make_tuple(output.seed, output.x, output.z);
+                if (seen_outputs.count(key)) continue;
+                seen_outputs.insert(key);
                 std::printf("%" PRIi64 " at %" PRIi32 " %" PRIi32 " with %" PRIi32 "\n", output.seed, output.x, output.z, output.score);
                 std::fprintf(output_file, "%" PRIi64 " %" PRIi32 " %" PRIi32 " %" PRIi32 "\n", output.seed, output.x, output.z, output.score);
                 std::fflush(output_file);
