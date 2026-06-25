@@ -22,13 +22,16 @@ int32_t measure_1to1(Cubiomes *cubiomes, int32_t cx, int32_t cz, int32_t radius,
     int32_t ox4 = (ox - 8) / 4;
     int32_t oz4 = (oz - 8) / 4;
 
-    std::vector<int> biome4a((size_t)gw4 * gw4); // y4=15
-    std::vector<int> biome4b((size_t)gw4 * gw4); // y4=16
+    // int8_t: just store is_mushroom boolean (4x less memory than int, better cache)
+    std::vector<int8_t> biome4a((size_t)gw4 * gw4); // y4=15
+    std::vector<int8_t> biome4b((size_t)gw4 * gw4); // y4=16
 
     unsigned nthreads = std::thread::hardware_concurrency();
     if (nthreads < 1) nthreads = 1;
 
-    // Step 1: Build scale-4 grid (parallel) — 2 layers, shared climate params
+    int cont_max = cubiomes_get_mushroom_cont_max(cubiomes);
+
+    // Step 1: Build scale-4 grid (parallel) — continentalness early-exit skips 4/7 Perlin for ~95% of cells
     {
         std::vector<std::thread> threads;
         int32_t rows_per = (gw4 + (int32_t)nthreads - 1) / (int32_t)nthreads;
@@ -39,16 +42,36 @@ int32_t measure_1to1(Cubiomes *cubiomes, int32_t cx, int32_t cz, int32_t radius,
             threads.emplace_back([&, r0, r1]() {
                 for (int32_t j = r0; j < r1; j++)
                     for (int32_t i = 0; i < gw4; i++) {
-                        int32_t x4 = ox4 + i, z4 = oz4 + j;
-                        biome4a[(size_t)j * gw4 + i] = cubiomes_sample_biome(cubiomes, x4, 15, z4);
-                        biome4b[(size_t)j * gw4 + i] = cubiomes_sample_biome(cubiomes, x4, 16, z4);
+                        int a, b;
+                        cubiomes_sample_biome_2y(cubiomes, ox4 + i, oz4 + j, cont_max, &a, &b);
+                        biome4a[(size_t)j * gw4 + i] = (a == 14);
+                        biome4b[(size_t)j * gw4 + i] = (b == 14);
                     }
             });
         }
         for (auto &th : threads) th.join();
     }
 
-    // Step 2: Voronoi lookup per block (parallel)
+    // Build dilated mask: mark scale-4 cells that are mushroom OR adjacent to one.
+    // Voronoi can map a block to its naive cell or +1 in each axis, so if the naive
+    // cell and all 8 neighbors are non-mushroom, the block definitely isn't mushroom.
+    std::vector<int8_t> mush_mask((size_t)gw4 * gw4, 0);
+    for (int32_t j = 0; j < gw4; j++) {
+        for (int32_t i = 0; i < gw4; i++) {
+            if (!biome4a[(size_t)j * gw4 + i] && !biome4b[(size_t)j * gw4 + i]) continue;
+            for (int32_t dj = -1; dj <= 1; dj++) {
+                int32_t nj = j + dj;
+                if (nj < 0 || nj >= gw4) continue;
+                for (int32_t di = -1; di <= 1; di++) {
+                    int32_t ni = i + di;
+                    if (ni < 0 || ni >= gw4) continue;
+                    mush_mask[(size_t)nj * gw4 + ni] = 1;
+                }
+            }
+        }
+    }
+
+    // Step 2: Voronoi lookup per block (parallel) — skip non-mushroom regions
     std::vector<int8_t> pass((size_t)gw * gw);
     {
         std::vector<std::thread> threads;
@@ -60,16 +83,25 @@ int32_t measure_1to1(Cubiomes *cubiomes, int32_t cx, int32_t cz, int32_t radius,
             threads.emplace_back([&, r0, r1]() {
                 for (int32_t j = r0; j < r1; j++) {
                     for (int32_t i = 0; i < gw; i++) {
+                        // Naive scale-4 cell (what Voronoi bases its search on)
+                        int32_t naive_x4 = (ox + i - 2) >> 2;
+                        int32_t naive_z4 = (oz + j - 2) >> 2;
+                        int32_t gi = naive_x4 - ox4;
+                        int32_t gj = naive_z4 - oz4;
+                        if (gi < 0 || gi >= gw4 || gj < 0 || gj >= gw4 || !mush_mask[(size_t)gj * gw4 + gi]) {
+                            pass[(size_t)j * gw + i] = 0;
+                            continue;
+                        }
+                        // Potential mushroom — do full Voronoi lookup
                         int32_t x4, y4, z4;
                         cubiomes_voronoi_map(cubiomes, ox + i, SEA_LEVEL, oz + j, &x4, &y4, &z4);
                         int32_t gx = x4 - ox4, gz = z4 - oz4;
                         if (gx < 0 || gx >= gw4 || gz < 0 || gz >= gw4) {
                             pass[(size_t)j * gw + i] = 0;
                         } else {
-                            int biome = (y4 <= 15)
+                            pass[(size_t)j * gw + i] = (y4 <= 15)
                                 ? biome4a[(size_t)gz * gw4 + gx]
                                 : biome4b[(size_t)gz * gw4 + gx];
-                            pass[(size_t)j * gw + i] = (biome == 14);
                         }
                     }
                 }

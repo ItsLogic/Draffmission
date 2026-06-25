@@ -3,7 +3,7 @@ CUBIOMES_SRC := $(addprefix cubiomes/,biomenoise.c biomes.c finders.c generator.
 LARGE_BIOMES ?= 0
 UNBOUND ?= 1
 PRINT_INTERVAL ?= 4096
-override CFLAGS += -O3
+override CFLAGS += -O3 -march=native
 override CXXFLAGS += -O3 -std=c++20 -I asio/asio/include -DOMISSION_LARGE_BIOMES=$(LARGE_BIOMES) -DOMISSION_UNBOUND=$(UNBOUND) -DPRINT_INTERVAL=$(PRINT_INTERVAL)
 
 ifndef GPU_ARCH

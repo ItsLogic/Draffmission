@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <math.h>
+
+extern float getSpline(const Spline *sp, const float *vals);
 
 struct Cubiomes {
     Generator g;
@@ -278,6 +281,54 @@ int cubiomes_test_biome_centers(Cubiomes *cubiomes, int32_t x, int32_t z, int32_
         return 1;
     }
     return 0;
+}
+
+int cubiomes_get_mushroom_cont_max(Cubiomes *cubiomes) {
+    const int *lim = getBiomeParaLimits(cubiomes->g.mc, mushroom_fields);
+    return lim[2 * NP_CONTINENTALNESS + 1];
+}
+
+void cubiomes_sample_biome_2y(Cubiomes *cubiomes, int32_t x4, int32_t z4, int cont_max, int *biome_15, int *biome_16) {
+    BiomeNoise *bn = &cubiomes->g.bn;
+
+    double px = x4, pz = z4;
+    px += sampleDoublePerlin(&bn->climate[NP_SHIFT], x4, 0, z4) * 4.0;
+    pz += sampleDoublePerlin(&bn->climate[NP_SHIFT], z4, x4, 0) * 4.0;
+
+    float c = sampleDoublePerlin(&bn->climate[NP_CONTINENTALNESS], px, 0, pz);
+
+    if ((int)(10000.0F * c) > cont_max) {
+        *biome_15 = 0;
+        *biome_16 = 0;
+        return;
+    }
+
+    // Full computation for potential mushroom cells (~5% of grid)
+    float e = sampleDoublePerlin(&bn->climate[NP_EROSION], px, 0, pz);
+    float w = sampleDoublePerlin(&bn->climate[NP_WEIRDNESS], px, 0, pz);
+
+    float np_param[] = { c, e, -3.0F * (fabsf(fabsf(w) - 0.6666667F) - 0.33333334F), w };
+    double off = getSpline(bn->sp, np_param) + 0.015F;
+
+    float t = sampleDoublePerlin(&bn->climate[NP_TEMPERATURE], px, 0, pz);
+    float h = sampleDoublePerlin(&bn->climate[NP_HUMIDITY], px, 0, pz);
+
+    {
+        float d = 1.0 - (15 * 4) / 128.0 - 83.0/160.0 + off;
+        int64_t np[6] = {
+            (int64_t)(10000.0F*t), (int64_t)(10000.0F*h), (int64_t)(10000.0F*c),
+            (int64_t)(10000.0F*e), (int64_t)(10000.0F*d), (int64_t)(10000.0F*w)
+        };
+        *biome_15 = climateToBiome(bn->mc, (const uint64_t*)np, NULL);
+    }
+    {
+        float d = 1.0 - (16 * 4) / 128.0 - 83.0/160.0 + off;
+        int64_t np[6] = {
+            (int64_t)(10000.0F*t), (int64_t)(10000.0F*h), (int64_t)(10000.0F*c),
+            (int64_t)(10000.0F*e), (int64_t)(10000.0F*d), (int64_t)(10000.0F*w)
+        };
+        *biome_16 = climateToBiome(bn->mc, (const uint64_t*)np, NULL);
+    }
 }
 
 int cubiomes_sample_biome(Cubiomes *cubiomes, int32_t x, int32_t y, int32_t z) {

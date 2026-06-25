@@ -22,6 +22,8 @@ void cubiomes_apply_seed(Cubiomes *cubiomes, uint64_t seed);
 int cubiomes_test_monte_carlo(Cubiomes *cubiomes, int32_t x, int32_t z, int32_t range, int32_t min_area, double confidence);
 int cubiomes_test_biome_centers(Cubiomes *cubiomes, int32_t x, int32_t z, int32_t range, int32_t min_area, int32_t scale, int32_t tol, PosArea *out);
 int cubiomes_sample_biome(Cubiomes *cubiomes, int32_t x, int32_t y, int32_t z);
+void cubiomes_sample_biome_2y(Cubiomes *cubiomes, int32_t x4, int32_t z4, int cont_max, int *biome_15, int *biome_16);
+int cubiomes_get_mushroom_cont_max(Cubiomes *cubiomes);
 int cubiomes_get_biome_at_block(Cubiomes *cubiomes, int32_t x, int32_t y, int32_t z);
 void cubiomes_voronoi_map(Cubiomes *cubiomes, int32_t x, int32_t y, int32_t z, int32_t *x4, int32_t *y4, int32_t *z4);
 int cubiomes_get_biome_at(Cubiomes *cubiomes, int32_t scale, int32_t x, int32_t y, int32_t z);
