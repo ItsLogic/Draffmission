@@ -543,6 +543,42 @@ template <size_t Octaves> struct ResultSampler {
       val += sample_octave<chosen_continentalness_config.octaves_b[8]>(table, octaves[17], x, y, z);
     return val;
   }
+
+  __device__ float sample_first12(const GradDotTable &table, int32_t x, int32_t y, int32_t z) const {
+    float val = 0;
+    if constexpr (Octaves >= 1) val += sample_octave<chosen_continentalness_config.octaves_a[0]>(table, octaves[0], x, y, z);
+    if constexpr (Octaves >= 2) val += sample_octave<chosen_continentalness_config.octaves_b[0]>(table, octaves[1], x, y, z);
+    if constexpr (Octaves >= 3) val += sample_octave<chosen_continentalness_config.octaves_a[1]>(table, octaves[2], x, y, z);
+    if constexpr (Octaves >= 4) val += sample_octave<chosen_continentalness_config.octaves_b[1]>(table, octaves[3], x, y, z);
+    if constexpr (Octaves >= 5) val += sample_octave<chosen_continentalness_config.octaves_a[2]>(table, octaves[4], x, y, z);
+    if constexpr (Octaves >= 6) val += sample_octave<chosen_continentalness_config.octaves_b[2]>(table, octaves[5], x, y, z);
+    if constexpr (Octaves >= 7) val += sample_octave<chosen_continentalness_config.octaves_a[3]>(table, octaves[6], x, y, z);
+    if constexpr (Octaves >= 8) val += sample_octave<chosen_continentalness_config.octaves_b[3]>(table, octaves[7], x, y, z);
+    if constexpr (Octaves >= 9) val += sample_octave<chosen_continentalness_config.octaves_a[4]>(table, octaves[8], x, y, z);
+    if constexpr (Octaves >= 10) val += sample_octave<chosen_continentalness_config.octaves_b[4]>(table, octaves[9], x, y, z);
+    if constexpr (Octaves >= 11) val += sample_octave<chosen_continentalness_config.octaves_a[5]>(table, octaves[10], x, y, z);
+    if constexpr (Octaves >= 12) val += sample_octave<chosen_continentalness_config.octaves_b[5]>(table, octaves[11], x, y, z);
+    return val;
+  }
+
+  __device__ float sample_rest12(const GradDotTable &table, int32_t x, int32_t y, int32_t z) const {
+    float val = 0;
+    if constexpr (Octaves >= 13) val += sample_octave<chosen_continentalness_config.octaves_a[6]>(table, octaves[12], x, y, z);
+    if constexpr (Octaves >= 14) val += sample_octave<chosen_continentalness_config.octaves_b[6]>(table, octaves[13], x, y, z);
+    if constexpr (Octaves >= 15) val += sample_octave<chosen_continentalness_config.octaves_a[7]>(table, octaves[14], x, y, z);
+    if constexpr (Octaves >= 16) val += sample_octave<chosen_continentalness_config.octaves_b[7]>(table, octaves[15], x, y, z);
+    if constexpr (Octaves >= 17) val += sample_octave<chosen_continentalness_config.octaves_a[8]>(table, octaves[16], x, y, z);
+    if constexpr (Octaves >= 18) val += sample_octave<chosen_continentalness_config.octaves_b[8]>(table, octaves[17], x, y, z);
+    return val;
+  }
+
+  static constexpr float rest12_margin() {
+    float m = 0;
+    if constexpr (Octaves >= 13) m += 2.0f * (float)chosen_continentalness_config.octaves_a[6].value_factor;
+    if constexpr (Octaves >= 15) m += 2.0f * (float)chosen_continentalness_config.octaves_a[7].value_factor;
+    if constexpr (Octaves >= 17) m += 2.0f * (float)chosen_continentalness_config.octaves_a[8].value_factor;
+    return m;
+  }
 };
 
 __device__ void copy_noise(ImprovedNoise (&shared_noise)[threads_per_block], Result *results, ImprovedNoise Result::*result_member, uint32_t block_base, uint32_t input_len) {
@@ -898,6 +934,7 @@ __launch_bounds__(block_dim_x) void kernel(
 
   __shared__ float conv_z0[256][6];
   __shared__ float conv_z1[256][6];
+  __shared__ int32_t s_hoisted_xy[2][6];
 
   for (uint32_t i = threadIdx.x; i < 288; i += blockDim.x) {
     reinterpret_cast<uint4*>(shared_kernel_0B)[i] =
@@ -955,13 +992,18 @@ __launch_bounds__(block_dim_x) void kernel(
       const int32_t nx = __float2int_rd(x * input_factor_b + oct_0B.xo - 2.0f);
 
       int32_t hoisted_idx_xy[2][6];
-#pragma unroll
-      for (int32_t dnx = 0; dnx < 6; ++dnx) {
+      if (threadIdx.x < 12) {
+        int32_t dnx = threadIdx.x % 6;
+        int32_t dny = threadIdx.x / 6;
         const int32_t idx_x = oct_0B.p[(nx + dnx) & 0xFF];
+        s_hoisted_xy[dny][dnx] = oct_0B.p[(idx_x + ny + dny) & 0xFF];
+      }
+      __syncthreads();
+
 #pragma unroll
-        for (int32_t dny = 0; dny < 2; ++dny) {
-          hoisted_idx_xy[dny][dnx] = oct_0B.p[(idx_x + ny + dny) & 0xFF];
-        }
+      for (int32_t i = 0; i < 6; ++i) {
+        hoisted_idx_xy[0][i] = s_hoisted_xy[0][i];
+        hoisted_idx_xy[1][i] = s_hoisted_xy[1][i];
       }
 
       for (uint32_t tz = threadIdx.x; tz < grid_width; tz += blockDim.x) {
@@ -1129,6 +1171,7 @@ __global__ __launch_bounds__(T::threads_per_block, T::loops > 1 ? 2 : 1) void ke
 
   __shared__ uint32_t shared_counts[inputs_per_block];
   __shared__ int32_t shared_sums[inputs_per_block][2];
+  __shared__ alignas(16) ImprovedNoise s_octaves_buf[T::octaves > 0 ? T::octaves : 1];
 
   for (uint32_t block_input_base = blockIdx.x * inputs_per_block; 
        block_input_base < inputs_len; 
@@ -1155,7 +1198,20 @@ __global__ __launch_bounds__(T::threads_per_block, T::loops > 1 ? 2 : 1) void ke
 
     if (is_valid_input) {
       input = inputs.data[input_index];
+    }
 
+    // Cooperative load of octave data to shared memory
+    if (is_valid_input) {
+      constexpr uint32_t n_u4 = (T::octaves * sizeof(ImprovedNoise)) / sizeof(uint4);
+      const uint4 *src = reinterpret_cast<const uint4 *>(&results[input.seed_index]);
+      uint4 *dst = reinterpret_cast<uint4 *>(s_octaves_buf);
+      for (uint32_t i = threadIdx.x; i < n_u4; i += blockDim.x) {
+        dst[i] = src[i];
+      }
+    }
+    __syncthreads();
+
+    if (is_valid_input) {
       const uint32_t x_index = pos_index % T::samples_square_size;
       uint32_t z_index = pos_index / T::samples_square_size;
       if constexpr (T::samples_square_sparse) {
@@ -1165,11 +1221,20 @@ __global__ __launch_bounds__(T::threads_per_block, T::loops > 1 ? 2 : 1) void ke
       int32_t x = input.x + (int32_t)(x_index * T::pos_step) + T::pos_offset;
       int32_t z = input.z + (int32_t)(z_index * T::pos_step) + T::pos_offset;
 
-      const auto &octaves = reinterpret_cast<const KernelSeed1::ResultSampler<T::octaves> &>(results[input.seed_index]);
+      const auto &octaves = *reinterpret_cast<const KernelSeed1::ResultSampler<T::octaves> *>(s_octaves_buf);
 
       for (uint32_t i = 0; i < T::loops; i++) {
         float val;
-        if constexpr (T::only_a) {
+        if constexpr (!T::only_a && T::octaves > 12) {
+          constexpr float margin = KernelSeed1::ResultSampler<T::octaves>::rest12_margin();
+          float val_low = octaves.sample_first12(shared_grad_dot_table, x, 0, z);
+          bool need_high = (val_low > T::noise_threshold - margin) && (val_low < T::noise_threshold + margin);
+          float val_high = 0;
+          if (__any_sync(0xFFFFFFFF, need_high)) {
+            val_high = octaves.sample_rest12(shared_grad_dot_table, x, 0, z);
+          }
+          val = val_low + val_high;
+        } else if constexpr (T::only_a) {
           val = octaves.sample_only_a(shared_grad_dot_table, x, 0, z);
         } else {
           val = octaves.sample(shared_grad_dot_table, x, 0, z);
