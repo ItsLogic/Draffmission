@@ -89,6 +89,7 @@ struct Args {
     std::optional<std::string> output_file;
     std::optional<int64_t> start_seed;
     std::optional<int32_t> min_size;
+    bool fast_cpu = false;
 
     bool parse(int argc, const char **const argv) {
         for (int i = 1; i < argc;) {
@@ -140,6 +141,8 @@ struct Args {
                 if (!parse_argument_int(argc, argv, i, start_seed, [](int64_t start_seed){ return true; }, arg)) return false;
             } else if (std::strcmp("--size", arg) == 0) {
                 if (!parse_argument_int(argc, argv, i, min_size, [](int32_t min_size){ return min_size >= 0; }, arg)) return false;
+            } else if (std::strcmp("--fast-cpu", arg) == 0) {
+                fast_cpu = true;
             } else {
                 std::fprintf(stderr, "unknown option: %s\n", arg);
                 return false;
@@ -187,12 +190,13 @@ uint64_t random_start_seed() {
 int main_inner(int argc, char **argv) {
     Args args{};
     if (!args.parse(argc, const_cast<const char **const>(argv))) {
-        std::fprintf(stderr, "Usage:\n%s [--device <device>,<device>,...] [--threads <threads>] [--client <server_address>] [--server <listen_address>] [--output <output_file>] [--start <start_seed>] [--size <min_size>]\n", argv[0]);
+        std::fprintf(stderr, "Usage:\n%s [--device <device>,<device>,...] [--threads <threads>] [--client <server_address>] [--server <listen_address>] [--output <output_file>] [--start <start_seed>] [--size <min_size>] [--fast-cpu]\n", argv[0]);
         return 1;
     }
 
     const int threads = args.threads.value_or(args.client ? 0 : 1);
     int32_t min_size = args.min_size.value_or(10'000'000 * (large_biomes ? 16 : 1));
+    fast_cpu = args.fast_cpu;
     if (threads != 0) {
         std::printf("min_size = %" PRIi32 "\n", min_size);
     }

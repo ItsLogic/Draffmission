@@ -279,3 +279,22 @@ int cubiomes_test_biome_centers(Cubiomes *cubiomes, int32_t x, int32_t z, int32_
     }
     return 0;
 }
+
+int cubiomes_sample_biome(Cubiomes *cubiomes, int32_t x, int32_t y, int32_t z) {
+    return sampleBiomeNoise(&cubiomes->g.bn, NULL, x, y, z, NULL, 0);
+}
+
+int cubiomes_get_biome_at_block(Cubiomes *cubiomes, int32_t x, int32_t y, int32_t z) {
+    Generator *g = &cubiomes->g;
+    int x4, y4, z4;
+    voronoiAccess3D(g->sha, x, y, z, &x4, &y4, &z4);
+    return sampleBiomeNoise(&g->bn, NULL, x4, y4, z4, NULL, 0);
+}
+
+void cubiomes_voronoi_map(Cubiomes *cubiomes, int32_t x, int32_t y, int32_t z, int32_t *x4, int32_t *y4, int32_t *z4) {
+    voronoiAccess3D(cubiomes->g.sha, x, y, z, (int*)x4, (int*)y4, (int*)z4);
+}
+
+int cubiomes_get_biome_at(Cubiomes *cubiomes, int32_t scale, int32_t x, int32_t y, int32_t z) {
+    return getBiomeAt(&cubiomes->g, scale, x, y, z);
+}

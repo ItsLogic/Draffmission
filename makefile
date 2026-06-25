@@ -76,13 +76,17 @@ lb:
 ulb:
 	$(MAKE) LARGE_BIOMES=1 UNBOUND=1 SPLIT=1 clean main
 
+.PHONE: sizecheck
+sizecheck: src/sizecheck.cpp cpu.o cubiomes.o libcubiomes.a src/cpu.h src/cubiomes.h
+	$(CXX) src/sizecheck.cpp cpu.o cubiomes.o libcubiomes.a -o sizecheck $(CXXFLAGS)
+
 .PHONY: bench
 bench: bench/bench.cu src/Random.h src/kernel_0A.h src/kernel_0B.h
 	nvcc $< -o bench/bench -O3 -std=c++20 --expt-relaxed-constexpr --default-stream per-thread \
 	  -arch=$(GPU_ARCH) -use_fast_math -ccbin $(CXX) -Xptxas -v
 
 clean:
-	rm -f main bench/bench libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o gpu_compat.o cpu.o client.o server.o
+	rm -f main sizecheck bench/bench libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o gpu_compat.o cpu.o client.o server.o
 
 libcubiomes.a:
 	$(CC) -c $(CUBIOMES_SRC) -fwrapv $(CFLAGS)
