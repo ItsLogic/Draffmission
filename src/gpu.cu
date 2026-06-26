@@ -694,7 +694,7 @@ __global__ __launch_bounds__(threads_per_block) void late_kernel(InputBuffer<uin
 
 template <uint32_t Stage>
 void run_late(InputBuffer<uint64_t> seeds, InputBuffer<SeedPos> inputs, Result *results, uint32_t *init_flags, cudaStream_t stream) {
-  late_kernel<Stage><<<1024, threads_per_block, 0, stream>>>(seeds, inputs, results, init_flags);
+  late_kernel<Stage><<<4096, threads_per_block, 0, stream>>>(seeds, inputs, results, init_flags);
   TRY_CUDA(cudaGetLastError());
 }
 } // namespace KernelSeed1
@@ -867,13 +867,13 @@ __launch_bounds__(block_dim_x) void kernel(
       uchar4 c1_2 = *reinterpret_cast<const uchar4*>(&idx_xy[1][nx + 8]);
       uchar4 c1_3 = *reinterpret_cast<const uchar4*>(&idx_xy[1][nx + 12]);
 
-      uint16_t w0[13];
+      uint32_t w0[13];
       w0[0]  = c0_0.x + nz; w0[1]  = c0_0.y + nz; w0[2]  = c0_0.z + nz; w0[3]  = c0_0.w + nz;
       w0[4]  = c0_1.x + nz; w0[5]  = c0_1.y + nz; w0[6]  = c0_1.z + nz; w0[7]  = c0_1.w + nz;
       w0[8]  = c0_2.x + nz; w0[9]  = c0_2.y + nz; w0[10] = c0_2.z + nz; w0[11] = c0_2.w + nz;
       w0[12] = c0_3.x + nz;
 
-      uint16_t w1[13];
+      uint32_t w1[13];
       w1[0]  = c1_0.x + nz; w1[1]  = c1_0.y + nz; w1[2]  = c1_0.z + nz; w1[3]  = c1_0.w + nz;
       w1[4]  = c1_1.x + nz; w1[5]  = c1_1.y + nz; w1[6]  = c1_1.z + nz; w1[7]  = c1_1.w + nz;
       w1[8]  = c1_2.x + nz; w1[9]  = c1_2.y + nz; w1[10] = c1_2.z + nz; w1[11] = c1_2.w + nz;
@@ -881,12 +881,22 @@ __launch_bounds__(block_dim_x) void kernel(
 
 #pragma unroll
       for (int candidate = 0; candidate < 8; ++candidate) {
-        const uint16_t* cw0 = &w0[candidate];
-        const uint16_t* cw1 = &w1[candidate];
+        const float cz0_2 = conv_z0[w0[candidate + 2]][2];
+        const float cz0_3 = conv_z0[w0[candidate + 3]][3];
+        const float cz1_2 = conv_z1[w1[candidate + 2]][2];
+        const float cz1_3 = conv_z1[w1[candidate + 3]][3];
 
-        const float gate = score_center_2x2(conv_z0, conv_z1, cw0, cw1);
+        const float gate = cz0_2 + cz0_3 + cz1_2 + cz1_3;
         if (gate >= kGradVecs1PrefilterThreshold) {
-          const float score = score_full_12(conv_z0, conv_z1, cw0, cw1);
+          float score = gate;
+          score += conv_z0[w0[candidate + 0]][0];
+          score += conv_z0[w0[candidate + 1]][1];
+          score += conv_z0[w0[candidate + 4]][4];
+          score += conv_z0[w0[candidate + 5]][5];
+          score += conv_z1[w1[candidate + 0]][0];
+          score += conv_z1[w1[candidate + 1]][1];
+          score += conv_z1[w1[candidate + 4]][4];
+          score += conv_z1[w1[candidate + 5]][5];
           if (score > kGradVecs1FinalThreshold) {
             uint32_t res_idx = atomicAdd(outputs.len, 1);
             if (res_idx < outputs.max_len) {
@@ -2012,7 +2022,10 @@ void GpuThread::run() {
     KernelFilterSeeds::run(start_seed, outputs_filter_seeds, stream);
     stage_filter_seeds.record(stream);
 
-    KernelSeed1::kernel<<<KernelSeed1::threads_per_run / KernelSeed1::threads_per_block, KernelSeed1::threads_per_block, 0, stream>>>(outputs_filter_seeds, results);
+    {
+      constexpr uint32_t init_grid = std::max(KernelSeed1::threads_per_run / KernelSeed1::threads_per_block, 4420u);
+      KernelSeed1::kernel<<<init_grid, KernelSeed1::threads_per_block, 0, stream>>>(outputs_filter_seeds, results);
+    }
     TRY_CUDA(cudaGetLastError());
     stage_init_seeds.record(stream);
 
