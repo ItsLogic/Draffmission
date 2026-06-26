@@ -76,7 +76,7 @@ lb:
 ulb:
 	$(MAKE) LARGE_BIOMES=1 UNBOUND=1 SPLIT=1 clean main
 
-.PHONE: sizecheck
+.PHONY: sizecheck
 sizecheck: src/sizecheck.cpp cpu.o cubiomes.o libcubiomes.a src/cpu.h src/cubiomes.h
 	$(CXX) src/sizecheck.cpp cpu.o cubiomes.o libcubiomes.a -o sizecheck $(CXXFLAGS)
 
@@ -111,7 +111,7 @@ libcubiomes.a:
 	$(AR) rcs libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o
 
 cubiomes.o: src/cubiomes.c src/cubiomes.h
-	$(CC) -c $< -o $@ $(CFLAGS)
+	$(CC) -c $< -o $@ -fwrapv $(CFLAGS)
 
 gpu.o: src/gpu.cu src/gpu.h src/common.h src/Random.h
 	nvcc -c $< -o $@ $(NVCC_FLAGS) $(if $(filter 1,$(SPLIT)),-DSPLIT)

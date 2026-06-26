@@ -1075,56 +1075,6 @@ void run(
 }
 } // namespace KernelFilterGradVecs2
 
-namespace KernelFilter1 {
-constexpr uint32_t threads_per_block = 256;
-constexpr uint32_t threads_per_seed_sqrt = UINT64_C(1) << 10;
-constexpr uint32_t threads_per_seed = threads_per_seed_sqrt * threads_per_seed_sqrt;
-// noise (1:4) coords
-constexpr int32_t pos_step = 14600 * large_biomes_pos_mul / 4;
-constexpr int32_t pos_range = (int32_t)threads_per_seed_sqrt * pos_step;
-static_assert(pos_range <= 60'000'000 / 4);
-
-__global__ __launch_bounds__(threads_per_block) void kernel(InputBuffer<uint64_t> seeds, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results) {
-  __shared__ GradDotTable shared_grad_dot_table;
-  if (threadIdx.x < sizeof(shared_grad_dot_table) / sizeof(uint32_t)) {
-    reinterpret_cast<uint32_t *>(&shared_grad_dot_table)[threadIdx.x] = reinterpret_cast<uint32_t *>(&device_grad_dot_table)[threadIdx.x];
-  }
-
-  uint32_t seeds_len = *seeds.len;
-
-  uint64_t total_threads = (uint64_t)seeds_len * threads_per_seed;
-  for (uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < total_threads; index += (uint64_t)gridDim.x * blockDim.x) {
-    uint32_t seed_index = index / threads_per_seed;
-    uint32_t pos_index = index % threads_per_seed;
-
-    uint32_t x_index = pos_index % threads_per_seed_sqrt;
-    uint32_t z_index = pos_index / threads_per_seed_sqrt;
-
-    int32_t x = (int32_t)x_index * pos_step - pos_range / 2;
-    int32_t z = (int32_t)z_index * pos_step - pos_range / 2;
-
-    // no more smem
-    const auto &octaves = reinterpret_cast<const KernelSeed1::ResultSampler<2> &>(results[seed_index]);
-
-    float val = octaves.sample(shared_grad_dot_table, x, 0, z);
-
-    if (val >= -0.515f)
-      continue; // 1 in 27.7
-
-    uint32_t result_index = atomicAdd(outputs.len, 1);
-    if (result_index >= outputs.max_len){
-      continue;
-    }
-    outputs.data[result_index] = {seed_index, x, z};
-  }
-}
-
-void run(InputBuffer<uint64_t> seeds, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results, cudaStream_t stream) {
-  kernel<<<16 * 1024, threads_per_block, 0, stream>>>(seeds, outputs, results);
-  TRY_CUDA(cudaGetLastError());
-}
-} // namespace KernelFilter1
-
 constexpr bool is_pow2(uint32_t val) { return (val & (val - 1)) == 0; }
 
 constexpr uint32_t log2(uint32_t val) { return 31 - std::countl_zero(val); }
