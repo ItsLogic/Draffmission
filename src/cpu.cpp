@@ -167,6 +167,93 @@ int32_t measure_1to1(Cubiomes *cubiomes, int32_t cx, int32_t cz, int32_t radius,
     return best_count;
 }
 
+// Fast parallel replacement for cubiomes_test_biome_centers(scale=4, tol=2).
+// Generates a scale-4 boolean grid in parallel, flood fills to find the biome center.
+static bool fast_find_center(Cubiomes *cubiomes, int32_t cx, int32_t cz, int32_t range,
+                             int32_t min_size, int cont_max, int32_t tol, PosArea &res) {
+    int32_t scale = 4;
+    int32_t sx = range / scale;
+    int32_t sz = range / scale;
+    int32_t ox = (cx - range / 2) / scale;
+    int32_t oz = (cz - range / 2) / scale;
+
+    std::vector<int8_t> grid((size_t)sx * sz, 0);
+    unsigned nthreads = std::thread::hardware_concurrency();
+    if (nthreads < 1) nthreads = 1;
+
+    // Parallel grid generation using fast biome sampler
+    {
+        std::vector<std::thread> threads;
+        int32_t rows_per = (sz + (int32_t)nthreads - 1) / (int32_t)nthreads;
+        for (unsigned t = 0; t < nthreads; t++) {
+            int32_t r0 = (int32_t)t * rows_per;
+            int32_t r1 = std::min(r0 + rows_per, sz);
+            if (r0 >= r1) break;
+            threads.emplace_back([&, r0, r1]() {
+                for (int32_t j = r0; j < r1; j++)
+                    for (int32_t i = 0; i < sx; i++) {
+                        int a, b;
+                        cubiomes_sample_biome_2y(cubiomes, ox + i, oz + j, cont_max, &a, &b);
+                        grid[(size_t)j * sx + i] = (a == 14 || b == 14);
+                    }
+            });
+        }
+        for (auto &th : threads) th.join();
+    }
+
+    // Flood fill to find largest connected mushroom component
+    struct PEntry { int32_t i, j; };
+    std::vector<PEntry> pstack;
+    pstack.reserve(1 << 16);
+
+    int32_t best_n = 0;
+    int64_t best_sx = 0, best_sz = 0;
+
+    for (int32_t sj = 0; sj < sz; sj++) {
+        for (int32_t si = 0; si < sx; si++) {
+            if (grid[(size_t)sj * sx + si] != 1) continue;
+
+            grid[(size_t)sj * sx + si] = -1;
+            pstack.push_back({si, sj});
+
+            int64_t sumx = 0, sumz = 0;
+            int32_t n = 0;
+
+            while (!pstack.empty()) {
+                PEntry e = pstack.back();
+                pstack.pop_back();
+                sumx += ox + e.i;
+                sumz += oz + e.j;
+                n++;
+
+                int32_t ni[4] = {e.i, e.i, e.i-1, e.i+1};
+                int32_t nj[4] = {e.j-1, e.j+1, e.j, e.j};
+                for (int k = 0; k < 4; k++) {
+                    if (ni[k] < 0 || ni[k] >= sx || nj[k] < 0 || nj[k] >= sz) continue;
+                    size_t nk = (size_t)nj[k] * sx + ni[k];
+                    if (grid[nk] == 1) {
+                        grid[nk] = -1;
+                        pstack.push_back({ni[k], nj[k]});
+                    }
+                }
+            }
+
+            if (n > best_n) {
+                best_n = n;
+                best_sx = sumx;
+                best_sz = sumz;
+            }
+        }
+    }
+
+    if (best_n == 0) return false;
+
+    res.x = (int32_t)((best_sx / best_n + 0.5) * scale);
+    res.z = (int32_t)((best_sz / best_n + 0.5) * scale);
+    res.area = best_n * (scale * scale);
+    return res.area >= min_size;
+}
+
 std::optional<CpuOutput> process(Cubiomes *cubiomes, int32_t min_size, const GpuOutput &input) {
     cubiomes_apply_seed(cubiomes, input.seed);
 
@@ -180,8 +267,9 @@ std::optional<CpuOutput> process(Cubiomes *cubiomes, int32_t min_size, const Gpu
         return {};
     }
 
+    int cont_max = cubiomes_get_mushroom_cont_max(cubiomes);
     PosArea res;
-    if (!cubiomes_test_biome_centers(cubiomes, input.x, input.z, range, min_size, 4, 2, &res)) {
+    if (!fast_find_center(cubiomes, input.x, input.z, range, min_size, cont_max, 2, res)) {
         return {};
     }
 

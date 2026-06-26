@@ -9,6 +9,111 @@
 
 extern float getSpline(const Spline *sp, const float *vals);
 
+// Inlined copies of noise functions — eliminates cross-CU function call overhead.
+// These are identical to noise.c but marked static inline so the compiler can
+// inline the full call chain into cubiomes_sample_biome_2y.
+static inline double fast_indexedLerp(uint8_t idx, double a, double b, double c)
+{
+    switch (idx & 0xf) {
+    case 0:  return  a + b;  case 1:  return -a + b;
+    case 2:  return  a - b;  case 3:  return -a - b;
+    case 4:  return  a + c;  case 5:  return -a + c;
+    case 6:  return  a - c;  case 7:  return -a - c;
+    case 8:  return  b + c;  case 9:  return -b + c;
+    case 10: return  b - c;  case 11: return -b - c;
+    case 12: return  a + b;  case 13: return -b + c;
+    case 14: return -a + b;  default: return -b - c;
+    }
+}
+
+static inline double fast_samplePerlin(const PerlinNoise *noise, double d1, double d2, double d3,
+        double yamp, double ymin)
+{
+    uint8_t h1, h2, h3;
+    double t1, t2, t3;
+
+    if (d2 == 0.0) {
+        d2 = noise->d2; h2 = noise->h2; t2 = noise->t2;
+    } else {
+        d2 += noise->b;
+        double i2 = floor(d2);
+        d2 -= i2;
+        h2 = (int) i2;
+        t2 = d2*d2*d2 * (d2 * (d2*6.0-15.0) + 10.0);
+    }
+
+    d1 += noise->a;
+    d3 += noise->c;
+
+    double i1 = floor(d1);
+    double i3 = floor(d3);
+    d1 -= i1;
+    d3 -= i3;
+
+    h1 = (int) i1;
+    h3 = (int) i3;
+
+    t1 = d1*d1*d1 * (d1 * (d1*6.0-15.0) + 10.0);
+    t3 = d3*d3*d3 * (d3 * (d3*6.0-15.0) + 10.0);
+
+    if (yamp) {
+        double yclamp = ymin < d2 ? ymin : d2;
+        d2 -= floor(yclamp / yamp) * yamp;
+    }
+
+    const uint8_t *idx = noise->d;
+
+    typedef struct vec2 { uint8_t a, b; } vec2;
+    vec2 v1 = { idx[h1], idx[h1+1] };
+    v1.a += h2; v1.b += h2;
+    vec2 v2 = { idx[v1.a], idx[v1.a+1] };
+    vec2 v3 = { idx[v1.b], idx[v1.b+1] };
+    v2.a += h3; v2.b += h3; v3.a += h3; v3.b += h3;
+    vec2 v4 = { idx[v2.a], idx[v2.a+1] };
+    vec2 v5 = { idx[v2.b], idx[v2.b+1] };
+    vec2 v6 = { idx[v3.a], idx[v3.a+1] };
+    vec2 v7 = { idx[v3.b], idx[v3.b+1] };
+
+    double l1 = fast_indexedLerp(v4.a, d1,   d2,   d3);
+    double l5 = fast_indexedLerp(v4.b, d1,   d2,   d3-1);
+    double l2 = fast_indexedLerp(v6.a, d1-1, d2,   d3);
+    double l6 = fast_indexedLerp(v6.b, d1-1, d2,   d3-1);
+    double l3 = fast_indexedLerp(v5.a, d1,   d2-1, d3);
+    double l7 = fast_indexedLerp(v5.b, d1,   d2-1, d3-1);
+    double l4 = fast_indexedLerp(v7.a, d1-1, d2-1, d3);
+    double l8 = fast_indexedLerp(v7.b, d1-1, d2-1, d3-1);
+
+    l1 = lerp(t1, l1, l2);
+    l3 = lerp(t1, l3, l4);
+    l5 = lerp(t1, l5, l6);
+    l7 = lerp(t1, l7, l8);
+    l1 = lerp(t2, l1, l3);
+    l5 = lerp(t2, l5, l7);
+    return lerp(t3, l1, l5);
+}
+
+static inline double fast_sampleOctave(const OctaveNoise *noise, double x, double y, double z)
+{
+    double v = 0;
+    for (int i = 0; i < noise->octcnt; i++) {
+        const PerlinNoise *p = noise->octaves + i;
+        double lf = p->lacunarity;
+        double ax = maintainPrecision(x * lf);
+        double ay = maintainPrecision(y * lf);
+        double az = maintainPrecision(z * lf);
+        v += p->amplitude * fast_samplePerlin(p, ax, ay, az, 0, 0);
+    }
+    return v;
+}
+
+static inline double fast_sampleDoublePerlin(const DoublePerlinNoise *noise, double x, double y, double z)
+{
+    const double f = 337.0 / 331.0;
+    double v = fast_sampleOctave(&noise->octA, x, y, z);
+    v += fast_sampleOctave(&noise->octB, x*f, y*f, z*f);
+    return v * noise->amplitude;
+}
+
 struct Cubiomes {
     Generator g;
 };
@@ -292,10 +397,10 @@ void cubiomes_sample_biome_2y(Cubiomes *cubiomes, int32_t x4, int32_t z4, int co
     BiomeNoise *bn = &cubiomes->g.bn;
 
     double px = x4, pz = z4;
-    px += sampleDoublePerlin(&bn->climate[NP_SHIFT], x4, 0, z4) * 4.0;
-    pz += sampleDoublePerlin(&bn->climate[NP_SHIFT], z4, x4, 0) * 4.0;
+    px += fast_sampleDoublePerlin(&bn->climate[NP_SHIFT], x4, 0, z4) * 4.0;
+    pz += fast_sampleDoublePerlin(&bn->climate[NP_SHIFT], z4, x4, 0) * 4.0;
 
-    float c = sampleDoublePerlin(&bn->climate[NP_CONTINENTALNESS], px, 0, pz);
+    float c = fast_sampleDoublePerlin(&bn->climate[NP_CONTINENTALNESS], px, 0, pz);
 
     if ((int)(10000.0F * c) > cont_max) {
         *biome_15 = 0;
@@ -304,14 +409,14 @@ void cubiomes_sample_biome_2y(Cubiomes *cubiomes, int32_t x4, int32_t z4, int co
     }
 
     // Full computation for potential mushroom cells (~5% of grid)
-    float e = sampleDoublePerlin(&bn->climate[NP_EROSION], px, 0, pz);
-    float w = sampleDoublePerlin(&bn->climate[NP_WEIRDNESS], px, 0, pz);
+    float e = fast_sampleDoublePerlin(&bn->climate[NP_EROSION], px, 0, pz);
+    float w = fast_sampleDoublePerlin(&bn->climate[NP_WEIRDNESS], px, 0, pz);
 
     float np_param[] = { c, e, -3.0F * (fabsf(fabsf(w) - 0.6666667F) - 0.33333334F), w };
     double off = getSpline(bn->sp, np_param) + 0.015F;
 
-    float t = sampleDoublePerlin(&bn->climate[NP_TEMPERATURE], px, 0, pz);
-    float h = sampleDoublePerlin(&bn->climate[NP_HUMIDITY], px, 0, pz);
+    float t = fast_sampleDoublePerlin(&bn->climate[NP_TEMPERATURE], px, 0, pz);
+    float h = fast_sampleDoublePerlin(&bn->climate[NP_HUMIDITY], px, 0, pz);
 
     {
         float d = 1.0 - (15 * 4) / 128.0 - 83.0/160.0 + off;
