@@ -384,7 +384,7 @@ __device__ float octave_yo_mod1(const XrsrRandomFork &noise_yo_fork) {
   return ((r >> 32) & 0xFFFFFF) * 5.9604645E-8f;
 }
 
-__global__ __launch_bounds__(threads_per_block, 4) void kernel(uint64_t start_seed, OutputBuffer<uint64_t> outputs) {
+__global__ __launch_bounds__(threads_per_block, 6) void kernel(uint64_t start_seed, OutputBuffer<uint64_t> outputs) {
   constexpr float maxScore = 0.038f; // 0.045f, 0.035f, 0.03f, 0.025f  ==  1 in 2700, 9400, 26000, 54000
 
   uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1914,10 +1914,6 @@ void GpuThread::run() {
   std::printf("Initializing device %d\n", device);
 
   TRY_CUDA(cudaSetDevice(device));
-  cudaFuncSetAttribute(KernelFilterGradVecs1::kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-  cudaFuncSetAttribute(KernelFilterGradVecs2::kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-  cudaFuncSetAttribute(KernelFilter2_0A::kernel,    cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-  cudaFuncSetAttribute(KernelFilter2_0B::kernel,    cudaFuncAttributePreferredSharedMemoryCarveout, 100);
   init_grad_dot_table();
   init_conv_kernels();
 #ifdef SPLIT
