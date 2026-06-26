@@ -80,13 +80,31 @@ ulb:
 sizecheck: src/sizecheck.cpp cpu.o cubiomes.o libcubiomes.a src/cpu.h src/cubiomes.h
 	$(CXX) src/sizecheck.cpp cpu.o cubiomes.o libcubiomes.a -o sizecheck $(CXXFLAGS)
 
+.PHONY: seedstats
+seedstats: src/seedstats.cpp libcubiomes.a
+	$(CXX) -O3 -std=c++17 src/seedstats.cpp libcubiomes.a -o seedstats -I. -lm -lpthread
+
+.PHONY: probe
+probe: src/probe.cpp libcubiomes.a
+	$(CXX) -O3 -std=c++17 src/probe.cpp libcubiomes.a -o probe -I. -lm -lpthread
+
+.PHONY: basinprobe
+basinprobe: src/basinprobe.cpp libcubiomes.a
+	$(CXX) -O3 -std=c++17 src/basinprobe.cpp libcubiomes.a -o basinprobe -I. -lm -lpthread
+
 .PHONY: bench
-bench: bench/bench.cu src/Random.h src/kernel_0A.h src/kernel_0B.h
-	nvcc $< -o bench/bench -O3 -std=c++20 --expt-relaxed-constexpr --default-stream per-thread \
-	  -arch=$(GPU_ARCH) -use_fast_math -ccbin $(CXX) -Xptxas -v
+bench: bench/bench.cu bench/bench_compat.cu src/Random.h src/kernel_0A.h src/kernel_0B.h
+	nvcc -c bench/bench.cu -o bench/bench_main.o -O3 -std=c++20 --expt-relaxed-constexpr \
+	  --default-stream per-thread -arch=$(GPU_ARCH) -use_fast_math -ccbin $(CXX) -Xptxas -v \
+	  -DBENCH_LARGE_BIOMES=$(LARGE_BIOMES) -DBENCH_UNBOUND=$(UNBOUND)
+	nvcc -c bench/bench_compat.cu -o bench/bench_compat.o -O3 -std=c++20 --expt-relaxed-constexpr \
+	  --default-stream per-thread -arch=compute_89 -use_fast_math -ccbin $(CXX) \
+	  -DBENCH_LARGE_BIOMES=$(LARGE_BIOMES)
+	nvcc bench/bench_main.o bench/bench_compat.o -o bench/bench -O3 -std=c++20 \
+	  --expt-relaxed-constexpr --default-stream per-thread -use_fast_math -ccbin $(CXX) -nodlink
 
 clean:
-	rm -f main sizecheck bench/bench libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o gpu_compat.o cpu.o client.o server.o
+	rm -f main sizecheck bench/bench bench/*.o libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o gpu_compat.o cpu.o client.o server.o
 
 libcubiomes.a:
 	$(CC) -c $(CUBIOMES_SRC) -fwrapv $(CFLAGS)

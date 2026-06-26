@@ -137,7 +137,12 @@ void cubiomes_apply_seed(Cubiomes *cubiomes, uint64_t seed) {
 }
 
 static int eval(Generator *g, int scale, int x, int y, int z, void *data) {
-    return sampleBiomeNoise(&g->bn, NULL, x, y, z, NULL, 0) == mushroom_fields;
+    (void)scale; (void)y; (void)data;
+    double px = x, pz = z;
+    px += sampleDoublePerlin(&g->bn.climate[NP_SHIFT], x, 0, z) * 4.0;
+    pz += sampleDoublePerlin(&g->bn.climate[NP_SHIFT], z, x, 0) * 4.0;
+    double c = sampleDoublePerlin(&g->bn.climate[NP_CONTINENTALNESS], px, 0, pz);
+    return c < -1.05;
 }
 
 static Range make_range(int32_t x, int32_t z, int32_t range, int32_t scale) {
@@ -159,6 +164,7 @@ struct locate_info_t
     Range r;
     int match, tol;
     volatile char *stop;
+    int (*fast_eval)(Generator*, int, int, int, int);
 };
 
 static
@@ -190,7 +196,9 @@ int floodFillGen(struct locate_info_t *info, int i, int j, Pos *p)
         info->ids[k] = INT_MAX;
         int x = info->r.x + i;
         int z = info->r.z + j;
-        if (info->g->mc >= MC_1_18)
+        if (info->fast_eval)
+            id = info->fast_eval(info->g, info->r.scale, x, info->r.y, z);
+        else if (info->g->mc >= MC_1_18)
             id = getBiomeAt(info->g, info->r.scale, x, info->r.y, z);
         if (id == info->match)
         {
@@ -224,6 +232,16 @@ int floodFillGen(struct locate_info_t *info, int i, int j, Pos *p)
     return n;
 }
 
+static int fast_mushroom_eval(Generator *g, int scale, int x, int y, int z) {
+    (void)y;
+    int scale4 = scale > 4 ? scale / 4 : 1;
+    int mid = scale4 / 2;
+    int x4 = x * scale4 + mid;
+    int z4 = z * scale4 + mid;
+    double c = fast_sampleDoublePerlin(&g->bn.climate[NP_CONTINENTALNESS], x4, 0, z4);
+    return ((int)(10000.0 * c) <= -10500) ? mushroom_fields : none;
+}
+
 static
 int getBiomeCentersOpt(Pos *pos, int *siz, int nmax, Generator *g, Range r,
     int match, int minsiz, int tol, int step, volatile char *stop)
@@ -244,10 +262,14 @@ int getBiomeCentersOpt(Pos *pos, int *siz, int nmax, Generator *g, Range r,
     info.stop = stop;
     info.match = match;
     info.tol = tol;
+    info.fast_eval = NULL;
 
     if (g->mc >= MC_1_18)
     {
         const int *lim = getBiomeParaLimits(g->mc, match);
+
+        if (match == mushroom_fields)
+            info.fast_eval = fast_mushroom_eval;
 
         int para[] = {
             NP_TEMPERATURE,
