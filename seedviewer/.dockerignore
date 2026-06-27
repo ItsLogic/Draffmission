@@ -1,0 +1,12 @@
+**/node_modules
+**/__pycache__
+**/.git
+data/
+*.o
+*.a
+main
+sizecheck
+bench/
+output.txt
+output1m.txt
+*.ppm

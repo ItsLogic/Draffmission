@@ -54,6 +54,9 @@ else
 	MAIN_CXXFLAGS += -DNO_NET
 endif
 
+MAIN_SRC += uploader.o
+MAIN_DEP += uploader.o src/uploader.h
+
 # Split compilation: SPLIT=1 enables gpu_compat.o (compute_89 JIT for Filter2_0A/0B)
 ifeq ($(SPLIT),1)
 	MAIN_SRC += gpu_compat.o
@@ -104,7 +107,7 @@ bench: bench/bench.cu bench/bench_compat.cu src/Random.h src/kernel_0A.h src/ker
 	  --expt-relaxed-constexpr --default-stream per-thread -use_fast_math -ccbin $(CXX) -nodlink
 
 clean:
-	rm -f main sizecheck bench/bench bench/*.o libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o gpu_compat.o cpu.o client.o server.o
+	rm -f main sizecheck bench/bench bench/*.o libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o gpu_compat.o cpu.o client.o server.o uploader.o
 
 libcubiomes.a:
 	$(CC) -c $(CUBIOMES_SRC) -fwrapv $(CFLAGS)
@@ -126,6 +129,9 @@ client.o: src/client.cpp src/client.h src/common.h
 	$(CXX) -c $< -o $@ $(CXXFLAGS)
 
 server.o: src/server.cpp src/server.h src/common.h
+	$(CXX) -c $< -o $@ $(CXXFLAGS)
+
+uploader.o: src/uploader.cpp src/uploader.h src/common.h
 	$(CXX) -c $< -o $@ $(CXXFLAGS)
 
 main: $(MAIN_DEP)

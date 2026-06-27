@@ -1,0 +1,25 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: seedviewer/Dockerfile.backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - DB_PATH=/data/seeds.db
+      - THUMB_DIR=/data/thumbnails
+      - MAP_DIR=/data/maps
+      - RENDERER_PATH=/app/renderer/render_map
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: seedviewer/Dockerfile.frontend
+    ports:
+      - "3080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

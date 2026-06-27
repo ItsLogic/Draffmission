@@ -1,0 +1,39 @@
+FROM gcc:13 AS renderer-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build/cubiomes
+COPY cubiomes/ ./
+
+WORKDIR /build/seedviewer/renderer
+COPY seedviewer/renderer/ ./
+
+RUN make clean && make
+
+# ---- Backend ----
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY seedviewer/backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY seedviewer/backend/ .
+
+COPY --from=renderer-builder /build/seedviewer/renderer/render_map /app/renderer/render_map
+
+ENV RENDERER_PATH=/app/renderer/render_map
+ENV DB_PATH=/data/seeds.db
+ENV THUMB_DIR=/data/thumbnails
+ENV MAP_DIR=/data/maps
+ENV FRONTEND_DIST=/app/frontend/dist
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

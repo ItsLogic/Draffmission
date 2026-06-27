@@ -9,6 +9,8 @@
 #include "client.h"
 #include "server.h"
 #endif
+#include "uploader.h"
+#include "cubiomes.h"
 
 #include <cstdint>
 #include <cstring>
@@ -21,6 +23,7 @@
 #include <random>
 #include <set>
 #include <tuple>
+#include <atomic>
 
 #ifndef NO_GPU
 #include <cuda_runtime.h>
@@ -87,6 +90,8 @@ struct Args {
     std::optional<HostService> client;
     std::optional<HostService> server;
     std::optional<std::string> output_file;
+    std::optional<HostService> upload;
+    bool no_upload = false;
     std::optional<int64_t> start_seed;
     std::optional<int32_t> min_size;
     bool fast_cpu = false;
@@ -137,6 +142,17 @@ struct Args {
                 if (check_duplicate((bool)output_file, arg)) return false;
                 if (check_argument(argc, i, arg)) return false;
                 output_file = argv[i++];
+            } else if (std::strcmp("--upload", arg) == 0) {
+                if (check_duplicate((bool)upload, arg)) return false;
+                if (check_argument(argc, i, arg)) return false;
+                auto address = split_address(argv[i++]);
+                if (!address) {
+                    std::fprintf(stderr, "invalid argument to --upload (expected host:port)\n");
+                    return false;
+                }
+                upload = std::move(address);
+            } else if (std::strcmp("--no-upload", arg) == 0) {
+                no_upload = true;
             } else if (std::strcmp("--start", arg) == 0) {
                 if (!parse_argument_int(argc, argv, i, start_seed, [](int64_t start_seed){ return true; }, arg)) return false;
             } else if (std::strcmp("--size", arg) == 0) {
@@ -190,7 +206,7 @@ uint64_t random_start_seed() {
 int main_inner(int argc, char **argv) {
     Args args{};
     if (!args.parse(argc, const_cast<const char **const>(argv))) {
-        std::fprintf(stderr, "Usage:\n%s [--device <device>,<device>,...] [--threads <threads>] [--client <server_address>] [--server <listen_address>] [--output <output_file>] [--start <start_seed>] [--size <min_size>] [--fast-cpu]\n", argv[0]);
+        std::fprintf(stderr, "Usage:\n%s [--device <device>,<device>,...] [--threads <threads>] [--client <server_address>] [--server <listen_address>] [--output <output_file>] [--upload <host:port>] [--start <start_seed>] [--size <min_size>] [--fast-cpu] [--no-upload]\n", argv[0]);
         return 1;
     }
 
@@ -297,6 +313,22 @@ int main_inner(int argc, char **argv) {
     }
 #endif
 
+    std::unique_ptr<UploaderThread> uploader_thread;
+    if (!args.no_upload) {
+        std::string up_host = "localhost";
+        std::string up_port = "8000";
+        if (args.upload) {
+            up_host = args.upload.value().host;
+            up_port = args.upload.value().service;
+        }
+        if (check_server_alive(up_host, up_port)) {
+            uploader_thread = std::make_unique<UploaderThread>(up_host, up_port);
+            std::printf("Uploading seeds to %s:%s\n", up_host.c_str(), up_port.c_str());
+        } else if (args.upload) {
+            std::fprintf(stderr, "Upload server %s:%s is not reachable, seeds will only be saved locally\n", up_host.c_str(), up_port.c_str());
+        }
+    }
+
     std::set<std::tuple<uint64_t, int32_t, int32_t>> seen_outputs;
 
     for (size_t i = 0;; i++) {
@@ -308,9 +340,13 @@ int main_inner(int argc, char **argv) {
                 auto key = std::make_tuple(output.seed, output.x, output.z);
                 if (seen_outputs.count(key)) continue;
                 seen_outputs.insert(key);
-                std::printf("%" PRIi64 " at %" PRIi32 " %" PRIi32 " with %" PRIi32 "\n", output.seed, output.x, output.z, output.score);
-                std::fprintf(output_file, "%" PRIi64 " %" PRIi32 " %" PRIi32 " %" PRIi32 "\n", output.seed, output.x, output.z, output.score);
+                constexpr const char *mode_str = large_biomes ? "lb" : "sb";
+                std::printf("%" PRIi64 " at %" PRIi32 " %" PRIi32 " with %" PRIi32 " [%s]\n", output.seed, output.x, output.z, output.score, mode_str);
+                std::fprintf(output_file, "%" PRIi64 " %" PRIi32 " %" PRIi32 " %" PRIi32 " %s\n", output.seed, output.x, output.z, output.score, mode_str);
                 std::fflush(output_file);
+                if (uploader_thread) {
+                    uploader_thread->enqueue(output.seed, output.x, output.z, output.score, mode_str);
+                }
             }
         }
 
@@ -359,6 +395,11 @@ int main_inner(int argc, char **argv) {
         (*server_thread).join();
     }
 #endif
+
+    if (uploader_thread) {
+        uploader_thread->stop();
+        uploader_thread->join();
+    }
 
     if (output_file != nullptr) {
         std::fclose(output_file);
