@@ -7,11 +7,31 @@
 #include <chrono>
 #include <thread>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+typedef SOCKET socket_t;
+#define CLOSESOCKET closesocket
+#define SOCKET_VALID(fd) ((fd) != INVALID_SOCKET)
+static bool wsa_init() {
+    WSADATA d;
+    return WSAStartup(MAKEWORD(2, 2), &d) == 0;
+}
+static void wsa_cleanup() { WSACleanup(); }
+#else
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
+typedef int socket_t;
+#define CLOSESOCKET close
+#define SOCKET_VALID(fd) ((fd) >= 0)
+static bool wsa_init() { return true; }
+static void wsa_cleanup() {}
+#endif
 
 bool check_server_alive(const std::string &host, const std::string &port) {
+    if (!wsa_init()) return false;
     struct addrinfo hints = {};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -20,19 +40,24 @@ bool check_server_alive(const std::string &host, const std::string &port) {
     int rc = getaddrinfo(host.c_str(), port.c_str(), &hints, &result);
     if (rc != 0 || !result) return false;
 
-    int fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (fd < 0) { freeaddrinfo(result); return false; }
+    socket_t fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (!SOCKET_VALID(fd)) { freeaddrinfo(result); return false; }
 
+#ifdef _WIN32
+    DWORD tv = 1000;
+#else
     struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
 
     bool ok = connect(fd, result->ai_addr, result->ai_addrlen) == 0;
-    close(fd);
+    CLOSESOCKET(fd);
     freeaddrinfo(result);
     return ok;
 }
 
 static bool http_post(const std::string &host, const std::string &port, const std::string &path) {
+    if (!wsa_init()) return false;
     struct addrinfo hints = {};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -44,20 +69,24 @@ static bool http_post(const std::string &host, const std::string &port, const st
         return false;
     }
 
-    int fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (fd < 0) {
+    socket_t fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (!SOCKET_VALID(fd)) {
         freeaddrinfo(result);
         std::fprintf(stderr, "[uploader] socket creation failed\n");
         return false;
     }
 
+#ifdef _WIN32
+    DWORD tv = 5000;
+#else
     struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
 
     if (connect(fd, result->ai_addr, result->ai_addrlen) < 0) {
         std::fprintf(stderr, "[uploader] connect to %s:%s failed\n", host.c_str(), port.c_str());
-        close(fd);
+        CLOSESOCKET(fd);
         freeaddrinfo(result);
         return false;
     }
@@ -69,16 +98,16 @@ static bool http_post(const std::string &host, const std::string &port, const st
     request += "Content-Length: 0\r\n";
     request += "\r\n";
 
-    ssize_t sent = send(fd, request.c_str(), request.size(), 0);
+    int sent = send(fd, request.c_str(), (int)request.size(), 0);
     if (sent < 0) {
         std::fprintf(stderr, "[uploader] send failed\n");
-        close(fd);
+        CLOSESOCKET(fd);
         return false;
     }
 
     char buf[512];
-    ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
-    close(fd);
+    int n = recv(fd, buf, sizeof(buf) - 1, 0);
+    CLOSESOCKET(fd);
 
     if (n <= 0) {
         std::fprintf(stderr, "[uploader] no response\n");
@@ -95,6 +124,7 @@ static bool http_post(const std::string &host, const std::string &port, const st
 }
 
 void UploaderThread::run() {
+    wsa_init();
     while (!should_stop()) {
         UploadItem item;
         bool has_item = false;

@@ -24,15 +24,15 @@ ifeq ($(OS),Windows_NT)
 
 # ── Windows: one-shot nvcc build ──────────────────────────────────────────────
 
-SRC_CPP := $(wildcard src/*.cpp)
+SRC_CPP := $(filter-out src/sizecheck.cpp,$(wildcard src/*.cpp))
 SRC_C   := $(wildcard src/*.c)
-SRC_CU  := $(wildcard src/*.cu)
+SRC_CU  := $(filter-out src/gpu_compat.cu,$(wildcard src/*.cu))
 SRC     := $(SRC_CPP) $(SRC_C) $(SRC_CU)
 
 all: main.exe
 
 main.exe: $(SRC) $(CUBIOMES_SRC)
-	nvcc $(SRC) $(CUBIOMES_SRC) -o $@ $(NVCC_FLAGS) -D_WIN32_WINNT=0x0601
+	nvcc $(SRC) $(CUBIOMES_SRC) -o $@ $(NVCC_FLAGS) -D_WIN32_WINNT=0x0601 -D_USE_MATH_DEFINES -lws2_32 -lmswsock
 
 clean:
 	del /Q main.exe
