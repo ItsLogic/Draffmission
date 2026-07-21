@@ -1,19 +1,8 @@
-# Platform detection
-ifeq ($(OS),Windows_NT)
-  EXE := .exe
-  PLATFORM_LIBS := -lws2_32 -lmswsock
-else
-  EXE :=
-  PLATFORM_LIBS :=
-endif
-
 CUBIOMES_SRC := $(addprefix cubiomes/,biomenoise.c biomes.c finders.c generator.c layers.c noise.c)
 
 LARGE_BIOMES ?= 0
 UNBOUND ?= 1
 PRINT_INTERVAL ?= 256
-override CFLAGS += -O3 -march=native
-override CXXFLAGS += -O3 -std=c++20 -I asio/asio/include -DOMISSION_LARGE_BIOMES=$(LARGE_BIOMES) -DOMISSION_UNBOUND=$(UNBOUND) -DPRINT_INTERVAL=$(PRINT_INTERVAL)
 
 ifndef GPU_ARCH
   GPU_NAMES := $(shell nvidia-smi --query-gpu=name --format=csv,noheader)
@@ -28,7 +17,32 @@ endif
 
 $(info Using GPU_ARCH = $(GPU_ARCH))
 
-override NVCC_FLAGS += $(CXXFLAGS) --expt-relaxed-constexpr --default-stream per-thread -arch=$(GPU_ARCH) -use_fast_math -ccbin $(CXX)
+override CXXFLAGS += -O3 -std=c++20 -I asio/asio/include -DOMISSION_LARGE_BIOMES=$(LARGE_BIOMES) -DOMISSION_UNBOUND=$(UNBOUND) -DPRINT_INTERVAL=$(PRINT_INTERVAL)
+override NVCC_FLAGS += $(CXXFLAGS) --expt-relaxed-constexpr --default-stream per-thread -arch=$(GPU_ARCH) -use_fast_math
+
+ifeq ($(OS),Windows_NT)
+
+# ── Windows: one-shot nvcc build ──────────────────────────────────────────────
+
+SRC_CPP := $(wildcard src/*.cpp)
+SRC_C   := $(wildcard src/*.c)
+SRC_CU  := $(wildcard src/*.cu)
+SRC     := $(SRC_CPP) $(SRC_C) $(SRC_CU)
+
+all: main.exe
+
+main.exe: $(SRC) $(CUBIOMES_SRC)
+	nvcc $(SRC) $(CUBIOMES_SRC) -o $@ $(NVCC_FLAGS) -D_WIN32_WINNT=0x0601
+
+clean:
+	del /Q main.exe
+
+else
+
+# ── Linux: split compilation ─────────────────────────────────────────────────
+
+override CFLAGS += -O3 -march=native
+override NVCC_FLAGS += -ccbin $(CXX)
 
 MAIN_SRC := src/main.cpp
 MAIN_DEP := $(MAIN_SRC) src/common.h
@@ -72,37 +86,37 @@ ifeq ($(SPLIT),1)
 	MAIN_DEP += gpu_compat.o
 endif
 
-all: main$(EXE)
+all: main
 
 # usb/sb: split compilation (sm_120 + compute_89 JIT)
 usb:
-	$(MAKE) LARGE_BIOMES=0 UNBOUND=1 SPLIT=1 clean main$(EXE)
+	$(MAKE) LARGE_BIOMES=0 UNBOUND=1 SPLIT=1 clean main
 
 sb:
-	$(MAKE) LARGE_BIOMES=0 UNBOUND=0 SPLIT=1 clean main$(EXE)
+	$(MAKE) LARGE_BIOMES=0 UNBOUND=0 SPLIT=1 clean main
 
 # lb/ulb: split compilation (sm_120 native + compute_89 JIT for filter2)
 lb:
-	$(MAKE) LARGE_BIOMES=1 UNBOUND=0 SPLIT=1 clean main$(EXE)
+	$(MAKE) LARGE_BIOMES=1 UNBOUND=0 SPLIT=1 clean main
 
 ulb:
-	$(MAKE) LARGE_BIOMES=1 UNBOUND=1 SPLIT=1 clean main$(EXE)
+	$(MAKE) LARGE_BIOMES=1 UNBOUND=1 SPLIT=1 clean main
 
 .PHONY: sizecheck
 sizecheck: src/sizecheck.cpp cpu.o cubiomes.o libcubiomes.a src/cpu.h src/cubiomes.h
-	$(CXX) src/sizecheck.cpp cpu.o cubiomes.o libcubiomes.a -o sizecheck$(EXE) $(CXXFLAGS)
+	$(CXX) src/sizecheck.cpp cpu.o cubiomes.o libcubiomes.a -o sizecheck $(CXXFLAGS)
 
 .PHONY: seedstats
 seedstats: src/seedstats.cpp libcubiomes.a
-	$(CXX) -O3 -std=c++17 src/seedstats.cpp libcubiomes.a -o seedstats$(EXE) -I. -lm -lpthread
+	$(CXX) -O3 -std=c++17 src/seedstats.cpp libcubiomes.a -o seedstats -I. -lm -lpthread
 
 .PHONY: probe
 probe: src/probe.cpp libcubiomes.a
-	$(CXX) -O3 -std=c++17 src/probe.cpp libcubiomes.a -o probe$(EXE) -I. -lm -lpthread
+	$(CXX) -O3 -std=c++17 src/probe.cpp libcubiomes.a -o probe -I. -lm -lpthread
 
 .PHONY: basinprobe
 basinprobe: src/basinprobe.cpp libcubiomes.a
-	$(CXX) -O3 -std=c++17 src/basinprobe.cpp libcubiomes.a -o basinprobe$(EXE) -I. -lm -lpthread
+	$(CXX) -O3 -std=c++17 src/basinprobe.cpp libcubiomes.a -o basinprobe -I. -lm -lpthread
 
 .PHONY: bench
 bench: bench/bench.cu bench/bench_compat.cu src/Random.h src/kernel_0A.h src/kernel_0B.h
@@ -112,11 +126,11 @@ bench: bench/bench.cu bench/bench_compat.cu src/Random.h src/kernel_0A.h src/ker
 	nvcc -c bench/bench_compat.cu -o bench/bench_compat.o -O3 -std=c++20 --expt-relaxed-constexpr \
 	  --default-stream per-thread -arch=compute_89 -use_fast_math -ccbin $(CXX) \
 	  -DBENCH_LARGE_BIOMES=$(LARGE_BIOMES)
-	nvcc bench/bench_main.o bench/bench_compat.o -o bench/bench$(EXE) -O3 -std=c++20 \
+	nvcc bench/bench_main.o bench/bench_compat.o -o bench/bench -O3 -std=c++20 \
 	  --expt-relaxed-constexpr --default-stream per-thread -use_fast_math -ccbin $(CXX) -nodlink
 
 clean:
-	-$(RM) main$(EXE) sizecheck$(EXE) bench/bench$(EXE) bench/*.o libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o gpu_compat.o cpu.o client.o server.o uploader.o
+	rm -f main sizecheck seedstats probe basinprobe bench/bench bench/*.o libcubiomes.a biomenoise.o biomes.o finders.o generator.o layers.o noise.o cubiomes.o gpu.o gpu_compat.o cpu.o client.o server.o uploader.o
 
 libcubiomes.a:
 	$(CC) -c $(CUBIOMES_SRC) -fwrapv $(CFLAGS)
@@ -143,5 +157,7 @@ server.o: src/server.cpp src/server.h src/common.h
 uploader.o: src/uploader.cpp src/uploader.h src/common.h
 	$(CXX) -c $< -o $@ $(CXXFLAGS)
 
-main$(EXE): $(MAIN_DEP)
-	$(MAIN_CXX) $(MAIN_SRC) -o $@ $(MAIN_CXXFLAGS) $(PLATFORM_LIBS)
+main: $(MAIN_DEP)
+	$(MAIN_CXX) $(MAIN_SRC) -o $@ $(MAIN_CXXFLAGS)
+
+endif
