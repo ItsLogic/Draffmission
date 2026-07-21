@@ -23,6 +23,9 @@ app.add_middleware(
 )
 
 WORLD_BORDER = 29_999_984
+# Island centers within this many blocks of (0,0) are treated as "at origin".
+# Matches the GPU --origin filter (4096 quarter-blocks = 16384 blocks).
+ORIGIN_RADIUS = 16384
 
 render_lock = threading.Lock()
 
@@ -71,7 +74,9 @@ def list_seeds(
     min_size: Optional[int] = Query(None),
     max_size: Optional[int] = None,
     mode: Optional[str] = Query(None, pattern="sb|lb|usb|ulb"),
+    biome: Optional[str] = Query(None, pattern="small|large"),
     in_bounds: Optional[bool] = None,
+    at_origin: Optional[bool] = None,
 ):
     where_parts = []
     params = []
@@ -89,11 +94,19 @@ def list_seeds(
     if mode:
         where_parts.append("mode = ?")
         params.append(mode)
+    if biome:
+        if biome == "small":
+            where_parts.append("(mode = 'sb' OR mode = 'usb')")
+        else:
+            where_parts.append("(mode = 'lb' OR mode = 'ulb')")
     if in_bounds is not None:
         if in_bounds:
             where_parts.append("mode NOT LIKE 'u%'")
         else:
             where_parts.append("mode LIKE 'u%'")
+    if at_origin is not None:
+        cond = f"(abs(x) <= {ORIGIN_RADIUS} AND abs(z) <= {ORIGIN_RADIUS})"
+        where_parts.append(cond if at_origin else f"NOT {cond}")
 
     where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
@@ -117,6 +130,8 @@ def list_seeds(
     for r in rows:
         d = dict(r)
         d["in_bounds"] = not d["mode"].startswith("u")
+        d["at_origin"] = abs(d["x"]) <= ORIGIN_RADIUS and abs(d["z"]) <= ORIGIN_RADIUS
+        d["seed"] = str(d["seed"])
         seed_list.append(d)
 
     return {
@@ -135,6 +150,7 @@ def get_seed(seed_id: int):
             raise HTTPException(404, "Seed not found")
         d = dict(row)
         d["in_bounds"] = not d["mode"].startswith("u")
+        d["seed"] = str(d["seed"])
         return d
 
 @app.post("/api/seeds/single")

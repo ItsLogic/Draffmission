@@ -45,6 +45,8 @@ constexpr bool no_net = true;
 constexpr bool no_net = false;
 #endif
 
+bool origin_filter = false;
+
 std::optional<HostService> split_address(std::string_view address) {
     size_t i = address.find_last_of(':');
     if (i == std::string_view::npos) return {};
@@ -95,6 +97,7 @@ struct Args {
     std::optional<int64_t> start_seed;
     std::optional<int32_t> min_size;
     bool fast_cpu = false;
+    bool origin = false;
 
     bool parse(int argc, const char **const argv) {
         for (int i = 1; i < argc;) {
@@ -159,6 +162,8 @@ struct Args {
                 if (!parse_argument_int(argc, argv, i, min_size, [](int32_t min_size){ return min_size >= 0; }, arg)) return false;
             } else if (std::strcmp("--fast-cpu", arg) == 0) {
                 fast_cpu = true;
+            } else if (std::strcmp("--origin", arg) == 0) {
+                origin = true;
             } else {
                 std::fprintf(stderr, "unknown option: %s\n", arg);
                 return false;
@@ -206,13 +211,14 @@ uint64_t random_start_seed() {
 int main_inner(int argc, char **argv) {
     Args args{};
     if (!args.parse(argc, const_cast<const char **const>(argv))) {
-        std::fprintf(stderr, "Usage:\n%s [--device <device>,<device>,...] [--threads <threads>] [--client <server_address>] [--server <listen_address>] [--output <output_file>] [--upload <host:port>] [--start <start_seed>] [--size <min_size>] [--fast-cpu] [--no-upload]\n", argv[0]);
+        std::fprintf(stderr, "Usage:\n%s [--device <device>,<device>,...] [--threads <threads>] [--client <server_address>] [--server <listen_address>] [--output <output_file>] [--upload <host:port>] [--start <start_seed>] [--size <min_size>] [--fast-cpu] [--origin] [--no-upload]\n", argv[0]);
         return 1;
     }
 
     const int threads = args.threads.value_or(args.client ? 0 : 1);
     int32_t min_size = args.min_size.value_or(10'000'000 * (large_biomes ? 16 : 1));
     fast_cpu = args.fast_cpu;
+    origin_filter = args.origin;
     if (threads != 0) {
         std::printf("min_size = %" PRIi32 "\n", min_size);
     }
@@ -290,14 +296,14 @@ int main_inner(int argc, char **argv) {
 
     std::vector<std::unique_ptr<GpuThread>> gpu_threads;
     for (int device : args.devices) {
-        gpu_threads.emplace_back(std::make_unique<GpuThread>(device, std::ref(seed_range), std::ref(gpu_outputs)));
+        gpu_threads.emplace_back(std::make_unique<GpuThread>(device, args.origin, std::ref(seed_range), std::ref(gpu_outputs)));
     }
 #endif
 
 #ifndef NO_CPU
     std::vector<std::unique_ptr<CpuThread>> cpu_threads;
     for (int i = 0; i < threads; i++) {
-        cpu_threads.emplace_back(std::make_unique<CpuThread>(i, min_size, std::ref(gpu_outputs), std::ref(cpu_outputs)));
+        cpu_threads.emplace_back(std::make_unique<CpuThread>(i, min_size, args.origin, std::ref(gpu_outputs), std::ref(cpu_outputs)));
     }
 #endif
 

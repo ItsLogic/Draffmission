@@ -12,7 +12,7 @@ const TILE_SIZE = 256
 const Y4 = 15
 
 interface Props {
-  seed: number
+  seed: string | number
   cx: number
   cz: number
   largeBiomes: boolean

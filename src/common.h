@@ -27,6 +27,8 @@ constexpr bool unbound = false;
 #define PRINT_INTERVAL 256
 #endif
 
+extern bool origin_filter;
+
 constexpr std::array<char, 16> net_handshake { 'O', 'M', 'I', 'S', 'S', 'I', 'O', 'N', '-', 'G', 'P', 'U', ' ', large_biomes ? 'L' : 'S', 'B', '\n' };
 
 struct GpuOutput {

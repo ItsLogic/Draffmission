@@ -8,6 +8,7 @@ export interface FilterState {
   max_size: string
   mode: string
   in_bounds: string
+  at_origin: string
 }
 
 interface Props {
@@ -47,18 +48,6 @@ export function FilterBar({ filters, onChange }: Props) {
       </div>
 
       <select
-        value={local.mode}
-        onChange={e => update('mode', e.target.value)}
-        className={selectClass}
-      >
-        <option value="">All Modes</option>
-        <option value="sb">Small Biomes</option>
-        <option value="lb">Large Biomes</option>
-        <option value="usb">Unbound SB</option>
-        <option value="ulb">Unbound LB</option>
-      </select>
-
-      <select
         value={local.in_bounds}
         onChange={e => update('in_bounds', e.target.value)}
         className={selectClass}
@@ -67,6 +56,19 @@ export function FilterBar({ filters, onChange }: Props) {
         <option value="true">In Bounds</option>
         <option value="false">Out of Bounds</option>
       </select>
+
+      <button
+        onClick={() => update('at_origin', local.at_origin === 'true' ? '' : 'true')}
+        className={`${selectClass} flex items-center gap-1.5 transition-colors ${
+          local.at_origin === 'true'
+            ? 'border-green/60 bg-green/15 text-green'
+            : 'hover:bg-surface0'
+        }`}
+        title="Only islands whose center is within 16384 blocks of (0,0)"
+      >
+        <span className="text-xs">◎</span>
+        At Origin
+      </button>
 
       <div className="flex items-center gap-1.5">
         <input

@@ -1,6 +1,6 @@
 export interface Seed {
   id: number
-  seed: number
+  seed: string
   x: number
   z: number
   size: number
@@ -9,6 +9,7 @@ export interface Seed {
   has_map: number
   created_at: string
   in_bounds?: boolean
+  at_origin?: boolean
 }
 
 export interface SeedListResponse {

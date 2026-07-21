@@ -11,7 +11,9 @@ export async function fetchSeeds(params: {
   min_size?: number
   max_size?: number
   mode?: string
+  biome?: string
   in_bounds?: boolean | null
+  at_origin?: boolean | null
 }): Promise<SeedListResponse> {
   const sp = new URLSearchParams()
   sp.set('page', String(params.page))
@@ -22,7 +24,9 @@ export async function fetchSeeds(params: {
   if (params.min_size != null) sp.set('min_size', String(params.min_size))
   if (params.max_size != null) sp.set('max_size', String(params.max_size))
   if (params.mode) sp.set('mode', params.mode)
+  if (params.biome) sp.set('biome', params.biome)
   if (params.in_bounds != null) sp.set('in_bounds', String(params.in_bounds))
+  if (params.at_origin != null) sp.set('at_origin', String(params.at_origin))
 
   const res = await fetch(`${API}/seeds?${sp}`)
   if (!res.ok) throw new Error(`Failed to fetch seeds: ${res.statusText}`)

@@ -11,6 +11,7 @@ export function SeedGrid() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [tab, setTab] = useState<'small' | 'large'>('small')
   const [filters, setFilters] = useState<FilterState>({
     sort: 'size',
     order: 'desc',
@@ -19,6 +20,7 @@ export function SeedGrid() {
     max_size: '',
     mode: '',
     in_bounds: '',
+    at_origin: '',
   })
 
   const sentinelRef = useRef<HTMLDivElement>(null)
@@ -42,7 +44,9 @@ export function SeedGrid() {
         min_size: filters.min_size ? parseInt(filters.min_size) : undefined,
         max_size: filters.max_size ? parseInt(filters.max_size) : undefined,
         mode: filters.mode || undefined,
+        biome: tab,
         in_bounds: filters.in_bounds === '' ? null : filters.in_bounds === 'true',
+        at_origin: filters.at_origin === '' ? null : filters.at_origin === 'true',
       })
       if (reqId !== reqIdRef.current) return
       if (replace) {
@@ -62,7 +66,7 @@ export function SeedGrid() {
         setLoading(false)
       }
     }
-  }, [filters])
+  }, [filters, tab])
 
   useEffect(() => {
     pageRef.current = 1
@@ -93,6 +97,29 @@ export function SeedGrid() {
 
   return (
     <div>
+      <div className="flex border-b border-surface0 bg-mantle">
+        <button
+          onClick={() => setTab('small')}
+          className={`px-6 py-3 text-sm font-semibold transition-colors ${
+            tab === 'small'
+              ? 'border-b-2 border-mauve text-text'
+              : 'text-overlay1 hover:text-subtext1'
+          }`}
+        >
+          Small Biomes
+        </button>
+        <button
+          onClick={() => setTab('large')}
+          className={`px-6 py-3 text-sm font-semibold transition-colors ${
+            tab === 'large'
+              ? 'border-b-2 border-mauve text-text'
+              : 'text-overlay1 hover:text-subtext1'
+          }`}
+        >
+          Large Biomes
+        </button>
+      </div>
+
       <FilterBar filters={filters} onChange={handleFilterChange} />
 
       <div className="mx-auto max-w-[1600px] px-4 py-4">

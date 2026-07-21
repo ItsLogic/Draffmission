@@ -1,14 +1,34 @@
+# Build artifacts
 *.o
 *.a
-
 /main
-/output.txt
+/sizecheck
+/seedstats
+/probe
+/basinprobe
+/checkscore
 
+# Output and scratch files
+/output.txt
+/output*.txt
+/temp.txt
+/test_*.txt
+/origin.txt
+
+# Nix
 /.direnv/
 /result
 /result-*
 
+# Editor / OS
 .DS_Store
 *~
 *.swp
 *.swo
+
+# Seedviewer
+seedviewer/data
+seedviewer/frontend/node_modules/
+seedviewer/frontend/dist/
+seedviewer/frontend/tsconfig.tsbuildinfo
+seedviewer/backend/__pycache__/

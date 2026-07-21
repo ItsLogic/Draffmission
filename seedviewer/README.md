@@ -132,4 +132,5 @@ Maps are rendered on-demand when first requested and cached as PNG files in `dat
 - **order**: `asc`, `desc`
 - **mode**: `sb`, `lb`, `usb`, `ulb`
 - **in_bounds**: within 2M blocks of origin (true/false)
+- **at_origin**: island center within 16384 blocks of (0,0) — intercepts spawn/origin (true/false)
 - **min_size / max_size**: block count range

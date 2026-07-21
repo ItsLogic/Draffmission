@@ -2,7 +2,7 @@ let workers: Worker[] = []
 let nextWorker = 0
 let requestId = 0
 const pending = new Map<number, (pixels: Uint8Array) => void>()
-let currentSeed: number | null = null
+let currentSeed: string | null = null
 let currentLargeBiomes: boolean | null = null
 
 async function createAndInitWorkers(seedLo: number, seedHi: number, largeBiomes: boolean) {
@@ -37,8 +37,9 @@ async function createAndInitWorkers(seedLo: number, seedHi: number, largeBiomes:
   })
 }
 
-export async function initCubiomes(seed: number, largeBiomes: boolean) {
-  if (currentSeed === seed && currentLargeBiomes === largeBiomes && workers.length > 0) {
+export async function initCubiomes(seed: string | number, largeBiomes: boolean) {
+  const seedStr = String(seed)
+  if (currentSeed === seedStr && currentLargeBiomes === largeBiomes && workers.length > 0) {
     return
   }
 
@@ -49,11 +50,12 @@ export async function initCubiomes(seed: number, largeBiomes: boolean) {
     nextWorker = 0
   }
 
-  currentSeed = seed
+  currentSeed = seedStr
   currentLargeBiomes = largeBiomes
 
-  const seedLo = (seed & 0xffffffff) >>> 0
-  const seedHi = Math.floor(seed / 0x100000000) >>> 0
+  const s = BigInt(seedStr)
+  const seedLo = Number(s & 0xffffffffn) >>> 0
+  const seedHi = Number((s >> 32n) & 0xffffffffn) >>> 0
 
   await createAndInitWorkers(seedLo, seedHi, largeBiomes)
 }

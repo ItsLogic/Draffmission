@@ -11,7 +11,7 @@
 
 bool fast_cpu = false;
 
-int32_t measure_1to1(Cubiomes *cubiomes, int32_t cx, int32_t cz, int32_t radius, int32_t *out_x, int32_t *out_z, bool *hit_edge) {
+int32_t measure_1to1(Cubiomes *cubiomes, int32_t cx, int32_t cz, int32_t radius, int32_t *out_x, int32_t *out_z, bool *hit_edge, bool from_center) {
     constexpr int32_t SEA_LEVEL = 62;
     int32_t gw = 2 * radius;
     int32_t ox = cx - radius;
@@ -122,39 +122,62 @@ int32_t measure_1to1(Cubiomes *cubiomes, int32_t cx, int32_t cz, int32_t radius,
     int32_t best_x = cx, best_z = cz;
     bool best_hit_edge = false;
 
-    for (int32_t sj = 0; sj < gw; sj++) {
-        for (int32_t si = 0; si < gw; si++) {
-            if (pass[(size_t)sj * gw + si] != 1) continue;
+    auto flood = [&](int32_t si, int32_t sj, int32_t &count, int32_t &bx, int32_t &bz, bool &edge) {
+        pass[(size_t)sj * gw + si] = -1;
+        stack.push_back({si, sj});
 
-            pass[(size_t)sj * gw + si] = -1;
-            stack.push_back({si, sj});
+        int64_t sum_x = 0, sum_z = 0;
+        count = 0;
+        edge = false;
 
-            int64_t sum_x = 0, sum_z = 0;
-            int32_t count = 0;
-            bool edge = false;
+        while (!stack.empty()) {
+            Entry e = stack.back();
+            stack.pop_back();
+            sum_x += ox + e.i;
+            sum_z += oz + e.j;
+            count++;
 
-            while (!stack.empty()) {
-                Entry e = stack.back();
-                stack.pop_back();
-                sum_x += ox + e.i;
-                sum_z += oz + e.j;
-                count++;
-
-                for (int k = 0; k < 4; k++) {
-                    int32_t ni = e.i + di[k], nj = e.j + dj[k];
-                    if (ni < 0 || ni >= gw || nj < 0 || nj >= gw) { edge = true; continue; }
-                    if (pass[(size_t)nj * gw + ni] == 1) {
-                        pass[(size_t)nj * gw + ni] = -1;
-                        stack.push_back({ni, nj});
-                    }
+            for (int k = 0; k < 4; k++) {
+                int32_t ni = e.i + di[k], nj = e.j + dj[k];
+                if (ni < 0 || ni >= gw || nj < 0 || nj >= gw) { edge = true; continue; }
+                if (pass[(size_t)nj * gw + ni] == 1) {
+                    pass[(size_t)nj * gw + ni] = -1;
+                    stack.push_back({ni, nj});
                 }
             }
+        }
 
-            if (count > best_count) {
-                best_count = count;
-                best_x = (int32_t)(sum_x / count);
-                best_z = (int32_t)(sum_z / count);
-                best_hit_edge = edge;
+        bx = (int32_t)(sum_x / count);
+        bz = (int32_t)(sum_z / count);
+    };
+
+    if (from_center) {
+        // Flood only the component containing the grid center (world cx,cz).
+        int32_t si = cx - ox, sj = cz - oz;
+        if (si >= 0 && si < gw && sj >= 0 && sj < gw && pass[(size_t)sj * gw + si] == 1) {
+            int32_t count = 0, bx = cx, bz = cz;
+            bool edge = false;
+            flood(si, sj, count, bx, bz, edge);
+            best_count = count;
+            best_x = bx;
+            best_z = bz;
+            best_hit_edge = edge;
+        }
+    } else {
+        for (int32_t sj = 0; sj < gw; sj++) {
+            for (int32_t si = 0; si < gw; si++) {
+                if (pass[(size_t)sj * gw + si] != 1) continue;
+
+                int32_t count = 0, bx = cx, bz = cz;
+                bool edge = false;
+                flood(si, sj, count, bx, bz, edge);
+
+                if (count > best_count) {
+                    best_count = count;
+                    best_x = bx;
+                    best_z = bz;
+                    best_hit_edge = edge;
+                }
             }
         }
     }
@@ -309,7 +332,52 @@ std::optional<CpuOutput> process(Cubiomes *cubiomes, int32_t min_size, const Gpu
     return {};
 }
 
-CpuThread::CpuThread(int id, int32_t min_size, GpuOutputs &inputs, CpuOutputs &outputs) : Thread(), id(id), min_size(min_size), inputs(inputs), outputs(outputs) {
+std::optional<CpuOutput> process_origin(Cubiomes *cubiomes, int32_t min_size, const GpuOutput &input) {
+    cubiomes_apply_seed(cubiomes, input.seed);
+
+    // Exact check: block (0, 62, 0) must be mushroom_fields (biome id 14).
+    constexpr int32_t SEA_LEVEL = 62;
+    constexpr int32_t MUSHROOM_FIELDS = 14;
+    if (cubiomes_get_biome_at_block(cubiomes, 0, SEA_LEVEL, 0) != MUSHROOM_FIELDS) {
+        return {};
+    }
+
+    if (fast_cpu) {
+        // Cheap statistical pre-check only; does not guarantee the exact size.
+        int32_t range = 12800 * (large_biomes ? 4 : 1);
+        if (!cubiomes_test_monte_carlo(cubiomes, 0, 0, range, (min_size * 0.9), 0.999)) {
+            return {};
+        }
+        return {{ input.seed, 0, 0, min_size }};
+    }
+
+    // Measure the connected mushroom component containing (0,0).
+    int32_t max_radius = large_biomes ? 24576 : 8192;
+    int32_t radius = 2048;
+
+    int32_t exact_x = 0, exact_z = 0;
+    bool hit_edge = false;
+    int32_t exact_area = measure_1to1(cubiomes, 0, 0, radius, &exact_x, &exact_z, &hit_edge, true);
+
+    // Grow the grid until the component no longer touches the edge or we hit the cap.
+    while (hit_edge && radius < max_radius) {
+        int32_t next = radius * 2;
+        if (next > max_radius) next = max_radius;
+        if (next == radius) break;
+        radius = next;
+        exact_x = 0; exact_z = 0;
+        hit_edge = false;
+        exact_area = measure_1to1(cubiomes, 0, 0, radius, &exact_x, &exact_z, &hit_edge, true);
+    }
+
+    if (exact_area >= min_size) {
+        return {{ input.seed, exact_x, exact_z, exact_area }};
+    }
+
+    return {};
+}
+
+CpuThread::CpuThread(int id, int32_t min_size, bool origin, GpuOutputs &inputs, CpuOutputs &outputs) : Thread(), id(id), min_size(min_size), origin(origin), inputs(inputs), outputs(outputs) {
     start();
 }
 
@@ -333,7 +401,7 @@ void CpuThread::run() {
 
         const auto start = std::chrono::steady_clock::now();
 
-        const auto output = process(cubiomes, min_size, input);
+        const auto output = origin ? process_origin(cubiomes, min_size, input) : process(cubiomes, min_size, input);
 
         const auto end = std::chrono::steady_clock::now();
         double time_total = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count() * 1e-9;

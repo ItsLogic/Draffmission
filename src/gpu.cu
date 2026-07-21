@@ -634,6 +634,48 @@ __global__ __launch_bounds__(threads_per_block) void kernel(InputBuffer<uint64_t
   init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[1].fork_hash, results, &Result::continentalness_1B, block_base, input_len, active);
 }
 
+// Initialize all 18 continentalness octaves for every seed in one pass. Used by the
+// origin filter, which needs an accurate full-resolution continentalness sample at
+// (0,0) — the 4-octave estimate from `kernel` cannot reach the mushroom threshold.
+__global__ __launch_bounds__(threads_per_block) void kernel_full(InputBuffer<uint64_t> input, Result *results) {
+  uint32_t block_base = blockIdx.x * blockDim.x;
+  uint32_t input_len = *input.len;
+  if (block_base >= input_len) {
+    return;
+  }
+
+  uint32_t index = block_base + threadIdx.x;
+  bool active = (index < input_len);
+
+  uint64_t seed = active ? input.data[index] : 0;
+
+  const auto seed_fork = XrsrRandom_seed_fork(seed);
+  auto noise_random = seed_fork.from(device_chosen_continentalness_config.fork_hash);
+
+  XrsrRandomFork noise_a_fork, noise_b_fork;
+  XrsrRandom_double_fork(noise_random, noise_a_fork, noise_b_fork);
+
+  init_octave(noise_a_fork, device_chosen_continentalness_config.octaves_a[0].fork_hash, results, &Result::continentalness_0A, block_base, input_len, active);
+  init_octave(noise_a_fork, device_chosen_continentalness_config.octaves_a[1].fork_hash, results, &Result::continentalness_1A, block_base, input_len, active);
+  init_octave(noise_a_fork, device_chosen_continentalness_config.octaves_a[2].fork_hash, results, &Result::continentalness_2A, block_base, input_len, active);
+  init_octave(noise_a_fork, device_chosen_continentalness_config.octaves_a[3].fork_hash, results, &Result::continentalness_3A, block_base, input_len, active);
+  init_octave(noise_a_fork, device_chosen_continentalness_config.octaves_a[4].fork_hash, results, &Result::continentalness_4A, block_base, input_len, active);
+  init_octave(noise_a_fork, device_chosen_continentalness_config.octaves_a[5].fork_hash, results, &Result::continentalness_5A, block_base, input_len, active);
+  init_octave(noise_a_fork, device_chosen_continentalness_config.octaves_a[6].fork_hash, results, &Result::continentalness_6A, block_base, input_len, active);
+  init_octave(noise_a_fork, device_chosen_continentalness_config.octaves_a[7].fork_hash, results, &Result::continentalness_7A, block_base, input_len, active);
+  init_octave(noise_a_fork, device_chosen_continentalness_config.octaves_a[8].fork_hash, results, &Result::continentalness_8A, block_base, input_len, active);
+
+  init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[0].fork_hash, results, &Result::continentalness_0B, block_base, input_len, active);
+  init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[1].fork_hash, results, &Result::continentalness_1B, block_base, input_len, active);
+  init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[2].fork_hash, results, &Result::continentalness_2B, block_base, input_len, active);
+  init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[3].fork_hash, results, &Result::continentalness_3B, block_base, input_len, active);
+  init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[4].fork_hash, results, &Result::continentalness_4B, block_base, input_len, active);
+  init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[5].fork_hash, results, &Result::continentalness_5B, block_base, input_len, active);
+  init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[6].fork_hash, results, &Result::continentalness_6B, block_base, input_len, active);
+  init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[7].fork_hash, results, &Result::continentalness_7B, block_base, input_len, active);
+  init_octave(noise_b_fork, device_chosen_continentalness_config.octaves_b[8].fork_hash, results, &Result::continentalness_8B, block_base, input_len, active);
+}
+
 __device__ void copy_noise_direct(const ImprovedNoise &shared_noise, Result *results, ImprovedNoise Result::*result_member, uint32_t seed_index) {
   constexpr uint32_t u4_per_struct = sizeof(ImprovedNoise) / sizeof(uint4);
   ImprovedNoise &dst = results[seed_index].*result_member;
@@ -1074,6 +1116,92 @@ void run(
   TRY_CUDA(cudaGetLastError());
 }
 } // namespace KernelFilterGradVecs2
+
+namespace KernelFilterOriginCheck {
+// Direct origin filter: for each seed, sample full-resolution continentalness at
+// (0,0) and on a grid around it. Keep seeds where (0,0) is near a mushroom island AND
+// the island is large enough. Replaces the entire gradvecs1 + progressive filter
+// chain in origin mode. The CPU does the exact biome check + connected-size measure.
+constexpr uint32_t threads_per_block = 256;
+constexpr uint32_t octaves = 18; // full continentalness for an accurate sample
+constexpr float origin_threshold = -9500.0f / 10000.0f; // loose: catches all mushroom + nearby ocean; grid count does real filtering
+constexpr float grid_threshold = -10500.0f / 10000.0f; // mushroom discriminator
+constexpr uint32_t grid_size = 16; // 16x16 = 256 samples, one per thread
+constexpr uint32_t grid_step = 128; // quarter-blocks between samples (32 blocks)
+constexpr int32_t grid_offset = -(int32_t)(grid_step * (grid_size - 1) / 2);
+constexpr uint32_t min_count = 16; // reject islands smaller than ~15k blocks
+
+__global__ __launch_bounds__(threads_per_block) void kernel(
+    InputBuffer<uint64_t> seeds, OutputBuffer<SeedPos> outputs,
+    const KernelSeed1::Result *__restrict__ results) {
+
+  __shared__ GradDotTable shared_grad_dot_table;
+  __shared__ alignas(16) ImprovedNoise s_octaves[octaves];
+  __shared__ uint32_t shared_count;
+  __shared__ bool shared_origin_ok;
+
+  constexpr uint32_t grad_table_words = sizeof(GradDotTable) / sizeof(uint32_t);
+  for (uint32_t i = threadIdx.x; i < grad_table_words; i += blockDim.x) {
+    reinterpret_cast<uint32_t *>(&shared_grad_dot_table)[i] =
+        reinterpret_cast<const uint32_t *>(&device_grad_dot_table)[i];
+  }
+
+  if (threadIdx.x == 0) {
+    shared_count = 0;
+    shared_origin_ok = false;
+  }
+  __syncthreads();
+
+  const uint32_t seed_index = blockIdx.x;
+  if (seed_index >= *seeds.len) return;
+
+  // Cooperative load of all octave data to shared memory
+  constexpr uint32_t n_u4 = (octaves * sizeof(ImprovedNoise)) / sizeof(uint4);
+  const uint4 *src = reinterpret_cast<const uint4 *>(&results[seed_index]);
+  uint4 *dst = reinterpret_cast<uint4 *>(s_octaves);
+  for (uint32_t i = threadIdx.x; i < n_u4; i += blockDim.x) {
+    dst[i] = src[i];
+  }
+  __syncthreads();
+
+  const auto &sampler = *reinterpret_cast<const KernelSeed1::ResultSampler<octaves> *>(s_octaves);
+
+  // Phase 1: is (0,0) on / near a mushroom island?
+  if (threadIdx.x == 0) {
+    float val = sampler.sample(shared_grad_dot_table, 0, 0, 0);
+    shared_origin_ok = (val < origin_threshold);
+  }
+  __syncthreads();
+
+  if (!shared_origin_ok) return;
+
+  // Phase 2: count mushroom grid points (estimate island size)
+  const uint32_t x_index = threadIdx.x % grid_size;
+  const uint32_t z_index = threadIdx.x / grid_size;
+  const int32_t x = (int32_t)(x_index * grid_step) + grid_offset;
+  const int32_t z = (int32_t)(z_index * grid_step) + grid_offset;
+
+  float val = sampler.sample(shared_grad_dot_table, x, 0, z);
+  if (val < grid_threshold) {
+    atomicAdd(&shared_count, 1u);
+  }
+  __syncthreads();
+
+  if (threadIdx.x == 0 && shared_count >= min_count) {
+    uint32_t idx = atomicAdd(outputs.len, 1);
+    if (idx < outputs.max_len) {
+      outputs.data[idx] = {seed_index, 0, 0};
+    }
+  }
+}
+
+void run(InputBuffer<uint64_t> seeds, OutputBuffer<SeedPos> outputs,
+         KernelSeed1::Result *results, cudaStream_t stream) {
+  kernel<<<KernelSeed1::threads_per_run, threads_per_block, 0, stream>>>(
+      seeds, outputs, results);
+  TRY_CUDA(cudaGetLastError());
+}
+} // namespace KernelFilterOriginCheck
 
 constexpr bool is_pow2(uint32_t val) { return (val & (val - 1)) == 0; }
 
@@ -1706,6 +1834,7 @@ std::pair<double, char> scale_si(double val) {
 struct BufferLens {
   uint32_t results_len_filter_seeds;
   uint32_t results_len_filter_gradvecs_1;
+  uint32_t results_len_origin;
   uint32_t results_len_filter_2_0a;
   uint32_t results_len_filter_2_0b;
   uint32_t results_len_filter_gradvecs_2;
@@ -1865,8 +1994,8 @@ struct GlobalReportAggregator {
 GlobalReportAggregator global_report_aggregator;
 
 
-GpuThread::GpuThread(int device, SeedIterator &input, GpuOutputs &outputs)
-    : Thread(), device(device), input(input), outputs(outputs) {
+GpuThread::GpuThread(int device, bool origin, SeedIterator &input, GpuOutputs &outputs)
+    : Thread(), device(device), origin(origin), input(input), outputs(outputs) {
   start();
 }
 
@@ -1909,18 +2038,28 @@ void GpuThread::run() {
   auto &stage_init_seeds = stage_stats.emplace_back("init_seeds", stage_filter_seeds.outputs_len, stage_filter_seeds.outputs_len, 1, KernelSeed1::threads_per_run);
 
   OutputBuffer<SeedPos> outputs_filter_gradvecs_1(buffer_2, &device_buffer_lens->results_len_filter_gradvecs_1);
-  auto &stage_filter_gradvecs_1 = stage_stats.emplace_back("filter_gradvecs_1", stage_filter_seeds.outputs_len, &host_buffer_lens.results_len_filter_gradvecs_1, 256 * 256, outputs_filter_gradvecs_1.max_len);
-
+  OutputBuffer<SeedPos> outputs_origin(buffer_2, &device_buffer_lens->results_len_origin);
   OutputBuffer<SeedPos> outputs_filter_2_0a(buffer_1, &device_buffer_lens->results_len_filter_2_0a);
-  auto &stage_filter_2_0a = stage_stats.emplace_back("filter_2_01a", stage_filter_gradvecs_1.outputs_len, &host_buffer_lens.results_len_filter_2_0a, 1, outputs_filter_2_0a.max_len);
-
   OutputBuffer<SeedPos> outputs_filter_gradvecs_2(buffer_2, &device_buffer_lens->results_len_filter_gradvecs_2);
-  auto &stage_filter_gradvecs_2 = stage_stats.emplace_back("filter_gradvecs_2", stage_filter_2_0a.outputs_len, &host_buffer_lens.results_len_filter_gradvecs_2, KernelFilterGradVecs2::threads_per_seed, outputs_filter_gradvecs_2.max_len);
-
   OutputBuffer<SeedPos> outputs_filter_2_0b(buffer_2, &device_buffer_lens->results_len_filter_2_0b);
-  auto &stage_filter_2_0b = stage_stats.emplace_back("filter_2_01b", stage_filter_gradvecs_2.outputs_len, &host_buffer_lens.results_len_filter_2_0b, 1, outputs_filter_2_0b.max_len);
 
-  auto &stage_init_seeds_late_1 = stage_stats.emplace_back("init_seeds_late_1", stage_filter_2_0b.outputs_len, stage_filter_2_0b.outputs_len, 1, outputs_filter_2_0b.max_len);
+  // Stage stats are registered per-mode so only stages that actually run are
+  // timed (the stats loop assumes every registered stage records its event).
+  StageStats *stage_filter_gradvecs_1 = nullptr;
+  StageStats *stage_origin = nullptr;
+  StageStats *stage_filter_2_0a = nullptr;
+  StageStats *stage_filter_gradvecs_2 = nullptr;
+  StageStats *stage_filter_2_0b = nullptr;
+  StageStats *stage_init_seeds_late_1 = nullptr;
+  if (origin) {
+    stage_origin = &stage_stats.emplace_back("filter_origin", stage_filter_seeds.outputs_len, &host_buffer_lens.results_len_origin, 1, outputs_origin.max_len);
+  } else {
+    stage_filter_gradvecs_1 = &stage_stats.emplace_back("filter_gradvecs_1", stage_filter_seeds.outputs_len, &host_buffer_lens.results_len_filter_gradvecs_1, 256 * 256, outputs_filter_gradvecs_1.max_len);
+    stage_filter_2_0a = &stage_stats.emplace_back("filter_2_01a", stage_filter_gradvecs_1->outputs_len, &host_buffer_lens.results_len_filter_2_0a, 1, outputs_filter_2_0a.max_len);
+    stage_filter_gradvecs_2 = &stage_stats.emplace_back("filter_gradvecs_2", stage_filter_2_0a->outputs_len, &host_buffer_lens.results_len_filter_gradvecs_2, KernelFilterGradVecs2::threads_per_seed, outputs_filter_gradvecs_2.max_len);
+    stage_filter_2_0b = &stage_stats.emplace_back("filter_2_01b", stage_filter_gradvecs_2->outputs_len, &host_buffer_lens.results_len_filter_2_0b, 1, outputs_filter_2_0b.max_len);
+    stage_init_seeds_late_1 = &stage_stats.emplace_back("init_seeds_late_1", stage_filter_2_0b->outputs_len, stage_filter_2_0b->outputs_len, 1, outputs_filter_2_0b.max_len);
+  }
 
   using Kernel2RunFunc = void (*)(InputBuffer<SeedPos> inputs, OutputBuffer<SeedPos> outputs, KernelSeed1::Result *results, cudaStream_t stream);
   struct Filter2Stage {
@@ -1943,8 +2082,8 @@ void GpuThread::run() {
       KernelFilter2::Template<-10500, 18, 10 * 1024, 16384, 1540, false, false, false>::run, // zajonc was here :D, use 1600 instead of 1540 because of colab shitty cpus
   };
   std::vector<Filter2Stage> filter_2;
-  {
-    uint32_t *inputs_len = stage_filter_2_0b.outputs_len;
+  if (!origin) {
+    uint32_t *inputs_len = stage_filter_2_0b->outputs_len;
     for (size_t i = 0; i < sizeof(filter_2_runs) / sizeof(*filter_2_runs); i++) {
       OutputBuffer<SeedPos> outputs(i % 2 == 0 ? buffer_1 : buffer_2, &device_buffer_lens->results_len_filter_2[i]);
 
@@ -1958,6 +2097,17 @@ void GpuThread::run() {
 
       filter_2.emplace_back(filter_2_runs[i], outputs, stage, late_stage);
     }
+  }
+
+  // Final GPU stage feeding the CPU queue (mode-dependent).
+  const OutputBuffer<SeedPos> *final_outputs;
+  const uint32_t *final_outputs_len;
+  if (origin) {
+    final_outputs = &outputs_origin;
+    final_outputs_len = stage_origin->outputs_len;
+  } else {
+    final_outputs = &filter_2.back().outputs;
+    final_outputs_len = filter_2.back().stage.outputs_len;
   }
 
   auto start = std::chrono::steady_clock::now();
@@ -1974,48 +2124,60 @@ void GpuThread::run() {
 
     {
       constexpr uint32_t init_grid = std::max(KernelSeed1::threads_per_run / KernelSeed1::threads_per_block, 4420u);
-      KernelSeed1::kernel<<<init_grid, KernelSeed1::threads_per_block, 0, stream>>>(outputs_filter_seeds, results);
+      if (origin) {
+        // Origin check needs all 18 octaves for an accurate continentalness sample.
+        KernelSeed1::kernel_full<<<init_grid, KernelSeed1::threads_per_block, 0, stream>>>(outputs_filter_seeds, results);
+      } else {
+        KernelSeed1::kernel<<<init_grid, KernelSeed1::threads_per_block, 0, stream>>>(outputs_filter_seeds, results);
+      }
     }
     TRY_CUDA(cudaGetLastError());
     stage_init_seeds.record(stream);
 
-    KernelFilterGradVecs1::run(outputs_filter_seeds, outputs_filter_gradvecs_1, results, stream);
-    stage_filter_gradvecs_1.record(stream);
+    if (origin) {
+      // Direct origin check: sample continentalness at (0,0) and a grid around it.
+      // Replaces the entire center-finding + progressive filter chain.
+      KernelFilterOriginCheck::run(outputs_filter_seeds, outputs_origin, results, stream);
+      stage_origin->record(stream);
+    } else {
+      KernelFilterGradVecs1::run(outputs_filter_seeds, outputs_filter_gradvecs_1, results, stream);
+      stage_filter_gradvecs_1->record(stream);
 
-    filter_2_0A_run(outputs_filter_gradvecs_1, outputs_filter_2_0a, results, stream);
-    stage_filter_2_0a.record(stream);
+      filter_2_0A_run(outputs_filter_gradvecs_1, outputs_filter_2_0a, results, stream);
+      stage_filter_2_0a->record(stream);
 
-    KernelFilterGradVecs2::run(outputs_filter_2_0a, outputs_filter_gradvecs_2, results, stream);
-    stage_filter_gradvecs_2.record(stream);
+      KernelFilterGradVecs2::run(outputs_filter_2_0a, outputs_filter_gradvecs_2, results, stream);
+      stage_filter_gradvecs_2->record(stream);
 
-    filter_2_0B_run(outputs_filter_gradvecs_2, outputs_filter_2_0b, results, stream);
-    stage_filter_2_0b.record(stream);
+      filter_2_0B_run(outputs_filter_gradvecs_2, outputs_filter_2_0b, results, stream);
+      stage_filter_2_0b->record(stream);
 
-    TRY_CUDA(cudaMemsetAsync(buffer_late_init_flags.data, 0, sizeof(uint32_t) * KernelSeed1::threads_per_run, stream));
-    KernelSeed1::run_late<1>(outputs_filter_seeds, outputs_filter_2_0b, results, (uint32_t *)buffer_late_init_flags.data, stream);
-    stage_init_seeds_late_1.record(stream);
+      TRY_CUDA(cudaMemsetAsync(buffer_late_init_flags.data, 0, sizeof(uint32_t) * KernelSeed1::threads_per_run, stream));
+      KernelSeed1::run_late<1>(outputs_filter_seeds, outputs_filter_2_0b, results, (uint32_t *)buffer_late_init_flags.data, stream);
+      stage_init_seeds_late_1->record(stream);
 
-    {
-      OutputBuffer<SeedPos> *inputs = &outputs_filter_2_0b;
-      for (size_t filter_index = 0; filter_index < filter_2.size(); filter_index++) {
-        auto &filter = filter_2[filter_index];
+      {
+        OutputBuffer<SeedPos> *inputs = &outputs_filter_2_0b;
+        for (size_t filter_index = 0; filter_index < filter_2.size(); filter_index++) {
+          auto &filter = filter_2[filter_index];
 
-        filter.run(*inputs, filter.outputs, results, stream);
-        filter.stage.record(stream);
+          filter.run(*inputs, filter.outputs, results, stream);
+          filter.stage.record(stream);
 
-        if (filter_index == 0) {
-          KernelSeed1::run_late<2>(outputs_filter_seeds, filter.outputs, results, (uint32_t *)buffer_late_init_flags.data, stream);
-        } else if (filter_index == 1) {
-          KernelSeed1::run_late<3>(outputs_filter_seeds, filter.outputs, results, (uint32_t *)buffer_late_init_flags.data, stream);
-        } else if (filter_index == 2) {
-          KernelSeed1::run_late<4>(outputs_filter_seeds, filter.outputs, results, (uint32_t *)buffer_late_init_flags.data, stream);
+          if (filter_index == 0) {
+            KernelSeed1::run_late<2>(outputs_filter_seeds, filter.outputs, results, (uint32_t *)buffer_late_init_flags.data, stream);
+          } else if (filter_index == 1) {
+            KernelSeed1::run_late<3>(outputs_filter_seeds, filter.outputs, results, (uint32_t *)buffer_late_init_flags.data, stream);
+          } else if (filter_index == 2) {
+            KernelSeed1::run_late<4>(outputs_filter_seeds, filter.outputs, results, (uint32_t *)buffer_late_init_flags.data, stream);
+          }
+
+          if (filter.late_stage != nullptr) {
+            filter.late_stage->record(stream);
+          }
+
+          inputs = &filter.outputs;
         }
-
-        if (filter.late_stage != nullptr) {
-          filter.late_stage->record(stream);
-        }
-
-        inputs = &filter.outputs;
       }
     }
 
@@ -2025,6 +2187,7 @@ void GpuThread::run() {
 
     host_buffer_lens.results_len_filter_seeds = std::min(host_buffer_lens.results_len_filter_seeds, outputs_filter_seeds.max_len);
     host_buffer_lens.results_len_filter_gradvecs_1 = std::min(host_buffer_lens.results_len_filter_gradvecs_1, outputs_filter_gradvecs_1.max_len);
+    host_buffer_lens.results_len_origin = std::min(host_buffer_lens.results_len_origin, outputs_origin.max_len);
     host_buffer_lens.results_len_filter_2_0a = std::min(host_buffer_lens.results_len_filter_2_0a, outputs_filter_2_0a.max_len);
     host_buffer_lens.results_len_filter_gradvecs_2 = std::min(host_buffer_lens.results_len_filter_gradvecs_2, outputs_filter_gradvecs_2.max_len);
     host_buffer_lens.results_len_filter_2_0b = std::min(host_buffer_lens.results_len_filter_2_0b, outputs_filter_2_0b.max_len);
@@ -2041,13 +2204,10 @@ void GpuThread::run() {
       }
     }
 
-    const auto &final_outputs = filter_2.back().outputs;
-    const auto &final_outputs_len = *filter_2.back().stage.outputs_len;
-    if (final_outputs_len > 0) {
-      // uint32_t len = std::min(final_outputs_len, UINT32_C(10));
-      uint32_t len = final_outputs_len;
+    if (*final_outputs_len > 0) {
+      uint32_t len = *final_outputs_len;
       h_buffer.resize(len);
-      TRY_CUDA(cudaMemcpy(h_buffer.data(), final_outputs.data, sizeof(*h_buffer.data()) * len, cudaMemcpyDeviceToHost));
+      TRY_CUDA(cudaMemcpy(h_buffer.data(), final_outputs->data, sizeof(*h_buffer.data()) * len, cudaMemcpyDeviceToHost));
 
       // Batch the seed-index D2H: copy up to the max index in one shot
       // instead of doing len individual 8-byte synchronous copies.
@@ -2083,7 +2243,7 @@ void GpuThread::run() {
       }
 
       snapshot.total_inputs = stage_filter_seeds.total_inputs * stage_filter_seeds.inputs_multiplier;
-      snapshot.total_outputs = filter_2.back().stage.total_outputs;
+      snapshot.total_outputs = origin ? stage_origin->total_outputs : filter_2.back().stage.total_outputs;
 
       {
         std::lock_guard lock(global_report_aggregator.outputs_mutex);

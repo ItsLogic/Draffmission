@@ -42,10 +42,15 @@ export function SeedCard({ seed }: { seed: Seed }) {
           onLoad={() => setLoaded(true)}
           className={`h-full w-full object-cover transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
         />
-        <div className="absolute right-2 top-2">
+        <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
           <span className="rounded-md bg-crust/80 px-1.5 py-0.5 font-mono text-xs text-pink">
             {formatSize(seed.size)}
           </span>
+          {seed.at_origin && (
+            <span className="rounded-md bg-green/90 px-1.5 py-0.5 text-xs font-bold text-crust" title="Island intercepts (0,0)">
+              ◎ 0,0
+            </span>
+          )}
         </div>
       </div>
       <div className="p-3">

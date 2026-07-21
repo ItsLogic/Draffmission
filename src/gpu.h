@@ -16,10 +16,11 @@ struct SeedIterator {
 
 struct GpuThread: Thread<GpuThread> {
     int device;
+    bool origin;
     SeedIterator &input;
     GpuOutputs &outputs;
 
-    GpuThread(int device, SeedIterator &input, GpuOutputs &outputs);
+    GpuThread(int device, bool origin, SeedIterator &input, GpuOutputs &outputs);
 
     void run();
 };

@@ -8,10 +8,6 @@ function formatNum(n: number): string {
   return n.toLocaleString()
 }
 
-function formatSeed(n: number): string {
-  return String(n)
-}
-
 function formatCoord(n: number): string {
   const sign = n < 0 ? '-' : ''
   return `${sign}${Math.abs(n).toLocaleString()}`
@@ -126,7 +122,7 @@ export function SeedDetail() {
             <dl className="space-y-3">
               <div>
                 <dt className="text-xs text-overlay1">World Seed</dt>
-                <dd className="font-mono text-sm text-text">{formatSeed(seed.seed)}</dd>
+                <dd className="font-mono text-sm text-text">{seed.seed}</dd>
               </div>
               <div>
                 <dt className="text-xs text-overlay1">Island Size</dt>
